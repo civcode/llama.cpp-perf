@@ -22,6 +22,7 @@ from array import array
 from collections import defaultdict
 import json
 from pathlib import Path
+import struct
 import sys
 
 
@@ -129,16 +130,25 @@ def compare_pair(a: dict, b: dict) -> dict | None:
     for q in range(4):
         removed = a_mask[q] - b_mask[q]
         added = b_mask[q] - a_mask[q]
-        changed_values = sum(
-            a_values[q][pos] != b_values[q][pos] for pos in a_mask[q] & b_mask[q]
+        changed_positions = sorted(
+            pos for pos in a_mask[q] & b_mask[q] if a_values[q][pos] != b_values[q][pos]
         )
+        changed_values = len(changed_positions)
         value_changes += changed_values
+        value_examples = [{
+            "position": pos,
+            "dense_bits": f"0x{a_values[q][pos]:04x}",
+            "sparse_bits": f"0x{b_values[q][pos]:04x}",
+            "dense_value": struct.unpack("<e", struct.pack("<H", a_values[q][pos]))[0],
+            "sparse_value": struct.unpack("<e", struct.pack("<H", b_values[q][pos]))[0],
+        } for pos in changed_positions[:12]]
         row_diffs.append({
             "query": q,
             "dense_count": len(a_mask[q]), "sparse_count": len(b_mask[q]),
             "removed_count": len(removed), "added_count": len(added),
             "removed_first": sorted(removed)[:12], "added_first": sorted(added)[:12],
             "common_selected_mask_value_changes": changed_values,
+            "common_selected_mask_value_examples": value_examples,
         })
 
     if a_mask == b_mask and value_changes == 0:

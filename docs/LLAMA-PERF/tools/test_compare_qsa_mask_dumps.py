@@ -71,12 +71,34 @@ class CompareMasksTest(unittest.TestCase):
         result = compare_logs(a, b)
         self.assertEqual(result["groups_different"], 1)
         self.assertEqual(result["union_count_differences"], 0)
-        self.assertEqual(result["first_difference_per_device"][0]["selected_mask_value_changes"], 1)
+        first = result["first_difference_per_device"][0]
+        self.assertEqual(first["selected_mask_value_changes"], 1)
+        self.assertEqual(first["rows"][0]["common_selected_mask_value_examples"], [
+            {"position": 0, "dense_bits": "0x0000", "sparse_bits": "0x3c00",
+             "dense_value": 0.0, "sparse_value": 1.0}])
+
+    def test_equal_union_different_membership(self):
+        a = write_case(self.root, "a", self.base)
+        changed = [dict(row) for row in self.base]
+        changed[3] = {1: 0}
+        b = write_case(self.root, "b", changed)
+        result = compare_logs(a, b)
+        self.assertEqual(result["groups_different"], 1)
+        self.assertEqual(result["union_count_differences"], 0)
+        self.assertEqual(result["first_difference_per_device"][0]["rows"][3]["added_first"], [1])
 
     def test_reject_nonnegative_infinity(self):
         a = write_case(self.root, "a", self.base)
         changed = [dict(row) for row in self.base]
         changed[0][0] = 0x7c00
+        b = write_case(self.root, "b", changed)
+        with self.assertRaises(ValueError):
+            compare_logs(a, b)
+
+    def test_reject_nan(self):
+        a = write_case(self.root, "a", self.base)
+        changed = [dict(row) for row in self.base]
+        changed[0][0] = 0x7e00
         b = write_case(self.root, "b", changed)
         with self.assertRaises(ValueError):
             compare_logs(a, b)
