@@ -898,20 +898,20 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 }
 
 // Opt-in, bounded, synchronous audit of the final attention-consumer mask.
-static void ggml_cuda_qsa_audit_mask(ggml_backend_cuda_context & ctx, const ggml_tensor * dst) {
+static long ggml_cuda_qsa_audit_mask(ggml_backend_cuda_context & ctx, const ggml_tensor * dst) {
     const char * option = std::getenv("GGML_QSA_MASK_AUDIT");
-    if (!option) return;
+    if (!option) return -1;
     const long limit = std::strtol(option, nullptr, 10);
     if (limit <= 0 || limit > 100000) GGML_ABORT("GGML_QSA_MASK_AUDIT must be 1..100000");
     const ggml_tensor * q = dst->src[0];
     const ggml_tensor * mask = dst->src[3];
     const int bound = ggml_get_op_params_i32(dst, 4);
-    if (!mask || bound <= 0 || q->ne[1] != 4) return;
+    if (!mask || bound <= 0 || q->ne[1] != 4) return -1;
     static std::atomic<unsigned long> invocation{0};
     const auto id = invocation.fetch_add(1);
     if (id >= (unsigned long) limit) {
         if (id == (unsigned long) limit) fprintf(stderr, "QSA_MASK_AUDIT limit reached; subsequent masks not inspected\n");
-        return;
+        return -1;
     }
     if (mask->type != GGML_TYPE_F16 || mask->nb[0] != sizeof(ggml_fp16_t) || mask->ne[0] > 262144 ||
         mask->ne[1] < 4 || mask->ne[2] != 1 || mask->ne[3] > 8 || mask->ne[3] != q->ne[3]) {
@@ -989,11 +989,74 @@ static void ggml_cuda_qsa_audit_mask(ggml_backend_cuda_context & ctx, const ggml
             GGML_ABORT("QSA mask audit detected an invalid or over-bound mask");
         }
     }
+    return static_cast<long>(id);
+}
+
+// Opt-in synchronous F32 output dump for the same QSA node as the mask audit.
+// Pair this with its mask dump by the shared invocation id, backend and device.
+// Do not use this diagnostic for benchmarks: it synchronizes after the kernel.
+static void ggml_cuda_qsa_dump_attn_output(
+        ggml_backend_cuda_context & ctx, const ggml_tensor * dst, long audit_id) {
+    const char * dir = std::getenv("GGML_QSA_ATTN_OUT_DIR");
+    if (!dir) return;
+    if (audit_id < 0 || !std::getenv("GGML_QSA_MASK_AUDIT")) {
+        GGML_ABORT("GGML_QSA_ATTN_OUT_DIR requires GGML_QSA_MASK_AUDIT");
+    }
+    const char * limit_option = std::getenv("GGML_QSA_ATTN_OUT_LIMIT");
+    long limit = 1;
+    if (limit_option) {
+        char * end = nullptr;
+        limit = std::strtol(limit_option, &end, 10);
+        if (!end || *end != '\0' || limit < 1 || limit > 256) {
+            GGML_ABORT("GGML_QSA_ATTN_OUT_LIMIT must be 1..256");
+        }
+    }
+    if (ctx.device < 0 || ctx.device >= 32) GGML_ABORT("QSA output audit: invalid device");
+    static std::atomic<unsigned long> dumped[32]{};
+    const unsigned long ordinal = dumped[ctx.device].fetch_add(1);
+    if (ordinal >= (unsigned long) limit) {
+        if (ordinal == (unsigned long) limit) {
+            fprintf(stderr, "QSA_ATTN_OUT limit=%ld reached device=%d\n", limit, ctx.device);
+        }
+        return;
+    }
+    if (dst->type != GGML_TYPE_F32 || !ggml_is_contiguous(dst) ||
+        ggml_nelements(dst) <= 0 || ggml_nelements(dst) > 1 << 20) {
+        GGML_ABORT("QSA output audit: unsupported output layout or size");
+    }
+    const size_t n = ggml_nelements(dst);
+    std::vector<float> values(n);
+    cudaStream_t stream = ctx.stream();
+    CUDA_CHECK(cudaMemcpyAsync(values.data(), dst->data, n*sizeof(float), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+#ifdef GGML_USE_HIP
+    const char * backend = "HIP";
+#else
+    const char * backend = "CUDA";
+#endif
+    char path[4096];
+    const int used = snprintf(path, sizeof(path), "%s/%s%d-id%ld-qsa-out.f32",
+                              dir, backend, ctx.device, audit_id);
+    if (used < 0 || size_t(used) >= sizeof(path)) {
+        GGML_ABORT("QSA output audit: path too long");
+    }
+    FILE * file = fopen(path, "wb");
+    if (!file) GGML_ABORT("QSA output audit: cannot open %s", path);
+    const size_t written = fwrite(values.data(), sizeof(float), values.size(), file);
+    const int closed = fclose(file);
+    if (written != values.size() || closed != 0) {
+        GGML_ABORT("QSA output audit: cannot write %s", path);
+    }
+    fprintf(stderr,
+        "QSA_ATTN_OUT backend=%s device=%d id=%ld tensor=%s ne=%lld,%lld,%lld,%lld path=%s\n",
+        backend, ctx.device, audit_id, dst->name,
+        (long long) dst->ne[0], (long long) dst->ne[1],
+        (long long) dst->ne[2], (long long) dst->ne[3], path);
 }
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
-    ggml_cuda_qsa_audit_mask(ctx, dst);
+    const long qsa_audit_id = ggml_cuda_qsa_audit_mask(ctx, dst);
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
@@ -1007,6 +1070,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
             break;
     }
+    ggml_cuda_qsa_dump_attn_output(ctx, dst, qsa_audit_id);
 }
 
 bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
