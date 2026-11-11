@@ -5,6 +5,7 @@
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
 #include "fattn-wmma-q4-tune.h"
+#include "fattn-sparse-q4-tune.h"
 
 #include <cstdlib>
 
@@ -128,11 +129,13 @@ void ggml_cuda_flash_attn_ext_compact_mask(
     const dim3 blocks_num((n_queries + ncols1 - 1)/ncols1, mask->ne[3], 1);
     const dim3 block_dim(256, 1, 1);
     const ggml_cuda_kernel_launch_params launch_params(blocks_num, block_dim, 0, stream);
-    // the last group of queries is partial only if ncols1 does not divide n_queries
-    GGML_ASSERT(ncols1 == 1 || ncols1 == 8);
-    const auto kernel = ncols1 == 1       ? flash_attn_mask_to_sparse_indices<1, false> :
-                        n_queries % 8 != 0 ? flash_attn_mask_to_sparse_indices<8, true>  :
-                                             flash_attn_mask_to_sparse_indices<8, false>;
+    // A Q=4 verification batch can share a sparse index list across its queries.
+    GGML_ASSERT(ncols1 == 1 || ncols1 == 4 || ncols1 == 8);
+    const auto kernel = ncols1 == 1 ? flash_attn_mask_to_sparse_indices<1, false> :
+                        ncols1 == 4 ? (n_queries % 4 != 0 ? flash_attn_mask_to_sparse_indices<4, true> :
+                                                               flash_attn_mask_to_sparse_indices<4, false>) :
+                                      (n_queries % 8 != 0 ? flash_attn_mask_to_sparse_indices<8, true> :
+                                                               flash_attn_mask_to_sparse_indices<8, false>);
     ggml_cuda_kernel_launch(kernel, launch_params,
         (const half *) mask->data, indices, counts, int(mask->ne[0]), n_queries, n_kv_max, s31, s33);
     CUDA_CHECK(cudaGetLastError());
@@ -161,10 +164,36 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
 
     const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
 
+    bool sparse_q4 = false;
+#if defined(GGML_USE_HIP)
+    if (ncols1 == 4 && ncols2 == 4 && mask != nullptr && K->ne[2] > 0 && Q->ne[2] % K->ne[2] == 0) {
+        bool gqa_opt = max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+        for (const ggml_tensor * t : {Q, K, V, mask}) {
+            if (ggml_is_quantized(t->type)) {
+                gqa_opt = false;
+            }
+            for (size_t i = 1; i < GGML_MAX_DIMS; ++i) {
+                if (t->nb[i] % 16 != 0) {
+                    gqa_opt = false;
+                }
+            }
+        }
+        sparse_q4 = ggml_cuda_fattn_sparse_q4::should_use(
+            GGML_CUDA_CC_IS_RDNA(cc), amd_wmma_available(cc), Q->ne[0], V->ne[0], K->ne[0],
+            Q->ne[1], Q->ne[3], Q->ne[2]/K->ne[2], gqa_opt,
+            K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
+            mask->type == GGML_TYPE_F16, K->ne[1], n_kv_max,
+            std::getenv("GGML_HIP_QSA_SPARSE_Q4"));
+    }
+#endif
+    if (ncols1 == 4 && ncols2 == 4 && !sparse_q4) {
+        return false;
+    }
+
     // the dense kernel handles up to 64/ncols2 queries per K/V pass, the single-query gather has to beat that
     const int64_t n_gather = (ncols1 == 1 ? std::min<int64_t>(Q->ne[1], 64/ncols2) : ncols1) * (int64_t) n_kv_max;
 
-    return ((GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc)) || amd_mfma_available(cc)) && dst->src[5] == nullptr &&
+    return ((GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc)) || amd_mfma_available(cc) || sparse_q4) && dst->src[5] == nullptr &&
         mask != nullptr && n_kv_max > 0 && max_bias == 0.0f && logit_softcap == 0.0f &&
         mask->ne[0] == K->ne[1] && mask->ne[1] >= Q->ne[1] && mask->ne[2] == 1 &&
         K->ne[1] >= std::max<int64_t>(4096, GGML_CUDA_CC_IS_NVIDIA(cc) ? 2*n_gather : 2LL*n_kv_max);
@@ -688,6 +717,21 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && mask && Q->ne[0] != 40 && Q->ne[0] != 72 ?
             BEST_FATTN_KERNEL_MMA_F16 : BEST_FATTN_KERNEL_NONE;
     }
+
+#if defined(GGML_USE_HIP)
+    // Opt-in sparse gather reuses the existing 256x256 WMMA kernel.
+    // Only the QSA n_kv_max shape can activate it.
+    const int32_t n_kv_max_sparse = ggml_get_op_params_i32(dst, 4);
+    if (ggml_cuda_fattn_sparse_q4::should_use(
+            GGML_CUDA_CC_IS_RDNA(cc), amd_wmma_available(cc),
+            Q->ne[0], V->ne[0], K->ne[0], Q->ne[1], Q->ne[3], gqa_ratio,
+            gqa_opt_applies,
+            K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
+            mask != nullptr && mask->type == GGML_TYPE_F16, K->ne[1],
+            n_kv_max_sparse, std::getenv("GGML_HIP_QSA_SPARSE_Q4"))) {
+        return BEST_FATTN_KERNEL_MMA_F16;
+    }
+#endif
 
 #if defined(GGML_USE_HIP)
     // Opt-in comparison for the 4-query RDNA GQA4 verification boundary.

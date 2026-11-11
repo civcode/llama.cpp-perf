@@ -1583,7 +1583,8 @@ struct test_case {
             std::vector<float> f1 = tensor_to_float(t1);
             std::vector<float> f2 = tensor_to_float(t2);
 
-            const bool mtp_flash = t1->op == GGML_OP_FLASH_ATTN_EXT && std::getenv("GGML_TEST_MTP_FA") != nullptr;
+            const bool mtp_flash = t1->op == GGML_OP_FLASH_ATTN_EXT &&
+                (std::getenv("GGML_TEST_MTP_FA") != nullptr || std::getenv("GGML_TEST_QSA_SPARSE_FA") != nullptr);
             for (size_t i = 0; i < f1.size(); i++) {
                 if (mtp_flash && (!std::isfinite(f1[i]) || !std::isfinite(f2[i]))) {
                     printf("[%s] non-finite output at index %zu (%s=%f %s=%f) ", ggml_op_desc(t1), i, bn1, f1[i], bn2, f2[i]);
@@ -9189,6 +9190,34 @@ struct test_flash_attn_ext_long_kv : public test_flash_attn_ext {
     }
 };
 
+// Fixed-work QSA-like sparse mask: 2048 selected KV positions across the
+// whole context, with slightly different visible subsets per Q row.
+struct test_flash_attn_ext_qsa_sparse : public test_flash_attn_ext_long_kv {
+    using test_flash_attn_ext_long_kv::test_flash_attn_ext_long_kv;
+
+    std::string vars() override {
+        return test_flash_attn_ext_long_kv::vars() + ",qsa_sparse=1";
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        test_flash_attn_ext_long_kv::initialize_tensors(ctx);
+        ggml_tensor * mask = ggml_get_tensor(ctx, "m");
+        GGML_ASSERT(mask != nullptr && mask->type == GGML_TYPE_F16);
+        GGML_ASSERT(mask->ne[0] % 2048 == 0);
+        const int64_t n_kv = mask->ne[0];
+        const int64_t stride = n_kv / 2048;
+        std::vector<ggml_fp16_t> vals(ggml_nelements(mask));
+        for (size_t i = 0; i < vals.size(); ++i) {
+            const int64_t row = i / n_kv;
+            const int64_t pos = i % n_kv;
+            const bool visible = pos % stride == 0 && ((pos / stride + row) % 13 != 0);
+            const float score = visible ? -0.015625f * static_cast<float>((pos + row) % 7) : -INFINITY;
+            vals[i] = ggml_fp32_to_fp16(score);
+        }
+        ggml_backend_tensor_set(mask, vals.data(), 0, vals.size() * sizeof(vals[0]));
+    }
+};
+
 // large Q values, so the online softmax has to rescale the partial results
 struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
     static constexpr int q_range = 20;
@@ -12958,6 +12987,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // QSA-style sparse 4-query verification: test long-context gather
+    // against CPU dense masked attention, with a 2048-per-query upper bound.
+    if (const char * value = std::getenv("GGML_TEST_QSA_SPARSE_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {32768, 98304}) {
+            test_cases.emplace_back(new test_flash_attn_ext_qsa_sparse(
+                256, 256, 2, {4, 1}, kv, 4, true, false, 0.0f, 0.0f,
+                GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16,
+                {0, 1, 2, 3}, true, false, 2048));
+        }
+    }
+
     // prefill-shaped cases with long KV (nb >= 32, kv >= 1024): covers the
     // XMX/GEMM-accelerated SYCL FA path which only activates for these shapes.
     for (int kv : { 1024, 2048, }) {
@@ -13506,6 +13546,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             test_cases.emplace_back(new test_flash_attn_ext_long_kv(
                 256, 256, 2, {4, 1}, kv, 4, true, false, 0.0f, 0.0f,
                 GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+
+    if (const char * value = std::getenv("GGML_TEST_QSA_SPARSE_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {32768, 98304}) {
+            test_cases.emplace_back(new test_flash_attn_ext_qsa_sparse(
+                256, 256, 2, {4, 1}, kv, 4, true, false, 0.0f, 0.0f,
+                GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16,
+                {0, 1, 2, 3}, true, false, 2048));
         }
     }
 

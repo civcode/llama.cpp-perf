@@ -2,7 +2,7 @@
 
 Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed CUDA + HIP inference using [civcode/llama.cpp-perf](https://github.com/civcode/llama.cpp-perf).
 
-**Status (2026-11-11):** Reports 0001–0003 identified context-dependent HIP waits and flash-attention kernel growth. Reports 0004–0007 ruled out the tested GQA regrouping and parallel KV block-count variants; these diagnostic flags remain off. After the system reboot, Report 0008 reproduced approximately 59 vs 40 t/s at 32K vs 98K with matching 204 MTP verification steps and accepted counts. Reports 0009–0010 recovered CUDA and verification-aligned HIP traces and identified two sequential target synchronization waits, **ROCm0 +4.417 ms** and **ROCm1 +3.404 ms** (HIP-profiled medians) as context grows. Flash-attention is the principal growing Radeon kernel family, but a complete cross-device causal latency decomposition remains unproven. Handoff 0011 tests one disabled-by-default **RDNA WMMA vs tile kernel** dispatch at the 4-query 256x256/GQA4 boundary, gated on CPU-reference correctness and fixed-work speed. Normal inference defaults are unchanged, and no validated model-level speedup has been established.
+**Status (2026-11-11):** Reports 0008–0010 reproduced mixed CUDA0/ROCm0/ROCm1 MTP context degradation at ~59 t/s (32K) versus ~40 t/s (98K) and resolved the two ordered GPU waits: ROCm0 wait +4.417 ms, ROCm1 +3.404 ms per verification step (HIP-profiled medians). Prior GQA/parallel-block tuning did not help. **Report 0011 rejected the opt-in dense WMMA Q=4 dispatch**: numerically correct but 15.5–25.4% slower than tile on two R9700s at 32K/98K. Handoff 0012 now tests whether the existing Qwen4 sparse-mask compaction and K/V gather architecture can be extended to **RDNA4 Q=4/GQA4** to avoid full-context K/V reads; it is guarded, off by default, and subject to strict CPU-reference, mask-bound and fixed-work performance gates. No proven production speedup or resolved whole-step causal decomposition yet.
 
 ## Documents
 
@@ -36,6 +36,10 @@ Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed C
 - [Collaborative handoff 0010](../../.ai/handoffs/handoff-0010.md) - split two HIP stream synchronizations per verification step and associate with scheduler/backend ordering.
 - [Report 0010](../../.ai/reports/report-0010.md) - confirmed ordered ROCm0 then ROCm1 target waits; relative wait and kernel-family growth.
 - [Collaborative handoff 0011](../../.ai/handoffs/handoff-0011.md) - opt-in 256x256 GQA4 Q=4 WMMA-vs-tile correctness and fixed-work A/B.
+- [Report 0011](../../.ai/reports/report-0011.md) - WMMA no-go despite CPU-reference correctness; tile faster on both R9700s.
+- [QSA sparse-attention RDNA4 audit](QSA-SPARSE-RDNA4-AUDIT.md) - relevant prior art, source gaps, sparse mask bounds and experiment gates.
+- [Collaborative handoff 0012](../../.ai/handoffs/handoff-0012.md) - verify guarded 4-query RDNA sparse FlashAttention against CPU reference and fixed-work baseline.
+- [Q4 RDNA sparse guard](../../ggml/src/ggml-cuda/fattn-sparse-q4-tune.h) - exact opt-in `GGML_HIP_QSA_SPARSE_Q4=1`; default dispatch unchanged.
 - [WMMA Q4 diagnostic guard](../../ggml/src/ggml-cuda/fattn-wmma-q4-tune.h) - strict `GGML_HIP_FATTN_FORCE_WMMA_Q4=1`; no default changes.
 - [MTP-shaped flash-attention tests](../../tests/test-backend-ops.cpp) - `GGML_TEST_MTP_FA=1` adds deterministic Q=4 CPU reference/performance cases at 32K and 98K.
 - [K/V scan-rate estimator](tools/kv_attention_bandwidth.py) - logical byte model only, **not** measured DRAM counters.
@@ -70,6 +74,6 @@ At 163,840 tokens of prefilled depth, the auto-fit target-only benchmark reports
 
 This is evidence of context-length sensitivity, **not** evidence that any one kernel (QSA, experts, transfers, or scheduling) is the cause.
 
-**Next checkpoint:** complete [handoff 0011](../../.ai/handoffs/handoff-0011.md): check whether the existing RDNA WMMA attention kernel outperforms the tile kernel for the actual Q=4 MTP verification shape at 32K/98K, **after CPU-reference correctness and confirmed kernel dispatch**. Run full-model MTP A/B only if both R9700 devices show a reproducible device-local win. Use **28 build jobs**, no GitHub Actions and leave inference defaults unchanged.
+**Next checkpoint:** complete [handoff 0012](../../.ai/handoffs/handoff-0012.md): validate sparse QSA mask union + gathered K/V for RDNA4 Q=4/GQA4 using CPU-reference 32K/98K cases and repeated device-local A/B; verify real model selection bounds before any mixed-GPU inference. All production defaults unchanged; use **28 build jobs** and no GitHub Actions.
 
 The original `/home/chris/workspace/llama.cpp` checkout is not part of this experiment and should remain unchanged.
