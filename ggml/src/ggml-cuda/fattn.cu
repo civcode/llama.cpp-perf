@@ -1067,6 +1067,17 @@ static void ggml_cuda_qsa_dump_first_inputs(ggml_backend_cuda_context & ctx, con
     if (audit_id < 0 || ctx.device != 0 || strcmp(dst->name, "qsa_flash_attn_il11") != 0) return;
     static std::atomic<bool> captured{false};
     if (captured.exchange(true)) return;
+    // The CPU-reference replay must use the *actual* layer attention scale,
+    // and must reject ALiBi/softcap/sink variants it does not implement.
+    float scale = 0.0f;
+    float max_bias = 0.0f;
+    float softcap = 0.0f;
+    memcpy(&scale,    (const float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias, (const float *) dst->op_params + 1, sizeof(float));
+    memcpy(&softcap,  (const float *) dst->op_params + 2, sizeof(float));
+    fprintf(stderr,
+            "QSA_INPUT_META backend=HIP device=%d id=%ld tensor=%s scale=%.9g max_bias=%.9g softcap=%.9g sinks=%d\\n",
+            ctx.device, audit_id, dst->name, scale, max_bias, softcap, dst->src[4] != nullptr ? 1 : 0);
     for (int i = 0; i < 3; ++i) {
         const ggml_tensor * t = dst->src[i];
         const size_t bytes = ggml_nbytes(t);
