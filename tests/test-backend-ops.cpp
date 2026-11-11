@@ -13646,6 +13646,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // Same opt-in GQA12 fixtures as correctness mode, for whole-op perf.
+    if (const char * value = std::getenv("GGML_TEST_QSA_GQA12_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {32768, 98304}) {
+            for (bool wide : {false, true}) {
+                test_cases.emplace_back(new test_flash_attn_ext_qsa_gqa12(kv, wide));
+            }
+        }
+    }
+
     for (float n : {128.0f, 4096.0f, 32768.0f, 1048576.0f}) {
         test_cases.emplace_back(new test_arange(GGML_TYPE_F32, 0.0f, n, 1.0f));
     }
