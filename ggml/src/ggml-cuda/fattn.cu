@@ -944,21 +944,40 @@ static void ggml_cuda_qsa_audit_mask(ggml_backend_cuda_context & ctx, const ggml
 #else
         const char * backend = "CUDA";
 #endif
-        // Optional single raw, contiguous [4, KV] F16 sample per backend/device.
-        // The caller supplies a dedicated output directory outside the repository.
+        // Optional, bounded raw contiguous [4, KV] F16 samples per backend/device.
+        // Keep the original first-sample filename when DUMP_LIMIT is not set.
+        // This is a synchronous diagnostic, never for performance measurements.
         const char * dump_dir = std::getenv("GGML_QSA_MASK_AUDIT_DIR");
-        static std::atomic<bool> dumped[32]{};
-        if (dump_dir && ctx.device >= 0 && ctx.device < 32 && !dumped[ctx.device].exchange(true)) {
-            char path[4096];
-            const int n = snprintf(path, sizeof(path), "%s/%s%d-mask.f16", dump_dir, backend, ctx.device);
-            if (n < 0 || size_t(n) >= sizeof(path)) GGML_ABORT("QSA mask audit dump path too long");
-            FILE * file = fopen(path, "wb");
-            if (!file) GGML_ABORT("QSA mask audit cannot open dump %s", path);
-            const size_t written = fwrite(data.data(), sizeof(data[0]), data.size(), file);
-            const int close_result = fclose(file);
-            if (written != data.size() || close_result != 0) GGML_ABORT("QSA mask audit cannot write dump %s", path);
-            fprintf(stderr, "QSA_MASK_DUMP backend=%s device=%d id=%lu stream=%lld kv=%zu path=%s\n",
-                    backend, ctx.device, id, (long long) s, kv, path);
+        const char * dump_limit_option = std::getenv("GGML_QSA_MASK_DUMP_LIMIT");
+        long dump_limit = 1;
+        if (dump_limit_option) {
+            char * end = nullptr;
+            dump_limit = std::strtol(dump_limit_option, &end, 10);
+            if (!end || *end != '\0' || dump_limit < 1 || dump_limit > 256 || !dump_dir) {
+                GGML_ABORT("GGML_QSA_MASK_DUMP_LIMIT requires GGML_QSA_MASK_AUDIT_DIR and a value 1..256");
+            }
+        }
+        static std::atomic<unsigned long> dumps[32]{};
+        if (dump_dir && ctx.device >= 0 && ctx.device < 32) {
+            const unsigned long dump_id = dumps[ctx.device].fetch_add(1);
+            if (dump_id < (unsigned long) dump_limit) {
+                char path[4096];
+                const int n = dump_limit_option
+                    ? snprintf(path, sizeof(path), "%s/%s%d-id%lu-s%lld-kv%zu.f16", dump_dir, backend,
+                               ctx.device, id, (long long) s, kv)
+                    : snprintf(path, sizeof(path), "%s/%s%d-mask.f16", dump_dir, backend, ctx.device);
+                if (n < 0 || size_t(n) >= sizeof(path)) GGML_ABORT("QSA mask audit dump path too long");
+                FILE * file = fopen(path, "wb");
+                if (!file) GGML_ABORT("QSA mask audit cannot open dump %s", path);
+                const size_t written = fwrite(data.data(), sizeof(data[0]), data.size(), file);
+                const int close_result = fclose(file);
+                if (written != data.size() || close_result != 0) GGML_ABORT("QSA mask audit cannot write dump %s", path);
+                fprintf(stderr, "QSA_MASK_DUMP backend=%s device=%d id=%lu stream=%lld kv=%zu path=%s\n",
+                        backend, ctx.device, id, (long long) s, kv, path);
+            } else if (dump_id == (unsigned long) dump_limit) {
+                fprintf(stderr, "QSA_MASK_DUMP limit=%ld reached backend=%s device=%d; subsequent masks not dumped\n",
+                        dump_limit, backend, ctx.device);
+            }
         }
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
         const long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
