@@ -11,6 +11,7 @@
 #include "server-realtime.h"
 #include "server-schema.h"
 #include "server-stream.h"
+#include "server-step-trace.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -3676,7 +3677,19 @@ private:
 
             try {
                 scoped_timer t(t_post_decode, n_post_decode);
+                if (batch.slot_batched) {
+                    const server_slot & trace_slot = *batch.slot_batched;
+                    server_step_trace::mark("post_decode_begin", trace_slot.id,
+                            trace_slot.stats.n_draft_verif_steps, trace_slot.stats.n_gen,
+                            n_tokens, static_cast<int32_t>(trace_slot.spec_draft.size()));
+                }
                 post_decode(n_tokens, off);
+                if (batch.slot_batched) {
+                    const server_slot & trace_slot = *batch.slot_batched;
+                    server_step_trace::mark("post_decode_end", trace_slot.id,
+                            trace_slot.stats.n_draft_verif_steps, trace_slot.stats.n_gen,
+                            n_tokens, static_cast<int32_t>(trace_slot.spec_draft.size()));
+                }
             } catch (const std::exception & e) {
                 SRV_ERR("post_decode() failed: %s\n", e.what());
                 abort_all_slots("post_decode() failed: " + std::string(e.what()));
@@ -3925,11 +3938,19 @@ private:
             }
         });
 
-        // generate the actual drafts (if any)
+        // Generate the drafts (if any). Trace only host boundaries: GPU
+        // completion still depends on the speculative backend's own ordering.
         if (!drafting.empty()) {
+            const server_slot & trace_slot = *drafting.front();
+            server_step_trace::mark("draft_begin", trace_slot.id,
+                    trace_slot.stats.n_draft_verif_steps, trace_slot.stats.n_gen,
+                    static_cast<int32_t>(drafting.size()), 0);
             queue_tasks.yield_to_queue([&]() {
                 common_speculative_draft(spec.get());
             });
+            server_step_trace::mark("draft_end", trace_slot.id,
+                    trace_slot.stats.n_draft_verif_steps, trace_slot.stats.n_gen,
+                    static_cast<int32_t>(drafting.size()), 0);
         }
 
         // make checkpoints if needed
@@ -4709,13 +4730,26 @@ private:
             has_output |= batch.tokens[i].output;
         }
 
-        // yield to the queue, so we can still handle metrics tasks while decoding
-        // note: the sync is done here too, so that the wait is also covered by the yield
+        // Yield to the queue so metrics tasks remain responsive. The trace
+        // instruments existing CPU boundaries without inserting GPU waits.
+        auto trace_target = [&](const char * phase) {
+            if (batch.slot_batched) {
+                const server_slot & trace_slot = *batch.slot_batched;
+                server_step_trace::mark(phase, trace_slot.id,
+                        trace_slot.stats.n_draft_verif_steps, trace_slot.stats.n_gen,
+                        batch.view.size(), static_cast<int32_t>(trace_slot.spec_draft.size()));
+            }
+        };
+
         int ret = 0;
         queue_tasks.yield_to_queue([&]() {
+            trace_target("target_process_begin");
             ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());
+            trace_target("target_process_end");
             if (ret == 0 && has_output) {
+                trace_target("target_sync_begin");
                 llama_synchronize(ctx_tgt);
+                trace_target("target_sync_end");
             }
         });
 
@@ -4777,9 +4811,11 @@ private:
         //       ref: https://github.com/ggml-org/llama.cpp/pull/22728#issuecomment-4400925384
         if (spec) {
             bool ok = true;
+            trace_target("spec_reprocess_begin");
             queue_tasks.yield_to_queue([&]() {
                 ok = common_speculative_process(spec.get(), batch.view);
             });
+            trace_target("spec_reprocess_end");
 
             if (!ok) {
                 SRV_ERR("%s", "failed to process speculative batch\n");
@@ -4963,6 +4999,10 @@ private:
                 // drafters that fill no distribution fall back here
                 const bool use_rejection = slot.use_spec_rejection() && !slot.spec_draft_q.empty();
 
+                server_step_trace::mark("verification_sample_begin", slot.id,
+                        slot.stats.n_draft_verif_steps, slot.stats.n_gen,
+                        static_cast<int32_t>(spec_i_batch.size()), static_cast<int32_t>(n_draft));
+
                 std::vector<llama_token> accepted;
                 if (!synth_probs.empty()) {
                     // synthetic acceptance replaces verification entirely, so it comes first
@@ -4978,6 +5018,9 @@ private:
                 }
 
                 GGML_ASSERT(accepted.size() >= 1);
+                server_step_trace::mark("verification_sample_end", slot.id,
+                        slot.stats.n_draft_verif_steps, slot.stats.n_gen,
+                        static_cast<int32_t>(accepted.size()), static_cast<int32_t>(n_draft));
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
 
@@ -5038,6 +5081,9 @@ private:
             // update how many tokens out of those tested were accepted
             slot.stats.n_draft_accepted += n_accepted;
             slot.stats.n_draft_verif_steps += 1;
+            server_step_trace::mark("verification_commit", slot.id,
+                    slot.stats.n_draft_verif_steps, slot.stats.n_gen,
+                    static_cast<int32_t>(n_accepted + 1), static_cast<int32_t>(n_draft));
 
             auto & n_accepted_per_pos = slot.n_accepted_per_pos;
             if (n_accepted_per_pos.empty()) {

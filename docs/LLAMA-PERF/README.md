@@ -2,7 +2,7 @@
 
 Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed CUDA + HIP inference using [civcode/llama.cpp-perf](https://github.com/civcode/llama.cpp-perf).
 
-**Status (2026-11-11):** Handoffs 0001–0002 attributed repeated HIP waits and uploads but found no justified transfer optimization. Handoff 0003's controlled 32K/98K MTP traces identified flash attention as the leading context-dependent kernel-work hypothesis; CUDA+HIP critical-path causality remains unproven. Handoffs 0004–0005 established that an alternative GQA tile grouping changes MTP acceptance but is 6–8% slower on matched Radeon attention work. Handoffs 0006–0007 exhaustively bounded the 256x256 HIP RDNA KV block-count experiment: all tested departures from automatic 64-block dispatch are slower, and 1/2 blocks failed selected long-KV numerical checks. **This tuning direction is closed.** Mixed-device target/model validation remains blocked until CUDA0 health after Xid 79/154 is demonstrated; device enumeration alone is insufficient. Both diagnostic environment switches remain disabled by default. No validated model-level speedup or numerical-equivalence claim has been established.
+**Status (2026-11-11):** Handoffs 0001–0002 attributed repeated HIP waits and uploads but found no justified transfer optimization. Handoff 0003's controlled 32K/98K MTP traces identified flash attention as the leading context-dependent kernel-work hypothesis; CUDA+HIP critical-path causality remains unproven. Handoffs 0004–0005 established that an alternative GQA tile grouping changes MTP acceptance but is 6–8% slower on matched Radeon attention work. Handoffs 0006–0007 exhaustively bounded the 256x256 HIP RDNA KV block-count experiment: all tested departures from automatic 64-block dispatch are slower, and 1/2 blocks failed selected long-KV numerical checks. **This tuning direction is closed.** Mixed-device target/model validation remains blocked until CUDA0 health after Xid 79/154 is demonstrated; device enumeration alone is insufficient. The user reports a subsequent system reboot restored CUDA0 visibility; hardware execution and long-context stability are to be verified in handoff 0008. Both diagnostic environment switches remain disabled by default. No validated model-level speedup or numerical-equivalence claim has been established.
 
 ## Documents
 
@@ -26,6 +26,9 @@ Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed C
 - [Collaborative handoff 0007](../../.ai/handoffs/handoff-0007.md) - bounded AMD-only fixed-work test of larger-than-auto KV partitions with CPU-reference correctness.
 - [Report 0007](../../.ai/reports/report-0007.md) - 96/128/192/256 blocks all slower than auto64 on both R9700s at 32K/98K; block-count tuning closed.
 - [Long-KV scan / bandwidth estimate](ATTENTION-KV-ROOFLINE.md) - computed logical K/V scan rates compared with R9700 rated bandwidth; hypothesis only, not measured DRAM counters.
+- [Server MTP step trace collector](../../tools/server/server-step-trace.h) - disabled-by-default host phase markers via `LLAMA_SERVER_STEP_TRACE=/absolute/path.tsv`; flush on clean server exit, no device waits.
+- [Host phase comparison tool](tools/server_step_trace_analysis.py) - paired CPU timeline durations and monotonic interval exports; GPU critical path requires separate correlation.
+- [Collaborative handoff 0008](../../.ai/handoffs/handoff-0008.md) - resume post-reboot mixed CUDA/ROCm MTP 32K/98K critical-path investigation.
 - [Benchmark results](BENCHMARK-RESULTS.md) - measured throughput, context-depth scaling, limitations, and initial hypotheses.
 - [Original auto-fit benchmark](raw/results-20261111-140511.md) - unmodified uploaded Markdown table (24 tests).
 - [Original fixed-split benchmark](raw/results-fixed-split-20261111-142812.md) - unmodified uploaded Markdown table (6 tests).
@@ -57,6 +60,6 @@ At 163,840 tokens of prefilled depth, the auto-fit target-only benchmark reports
 
 This is evidence of context-length sensitivity, **not** evidence that any one kernel (QSA, experts, transfers, or scheduling) is the cause.
 
-**Next checkpoint:** verify CUDA0 **stability**, not merely enumeration, before resuming matched three-GPU 32K/98K target-only and MTP critical-path studies with fixed tokens and numerical/state comparisons. AMD-only bandwidth counters may be worthwhile if supported, but the logical scan estimate is not a measured DRAM bandwidth. **Do not start another blind HIP block-count experiment.** Use **28 build jobs** locally; do not dispatch GitHub Actions.
+**Next checkpoint:** complete [handoff 0008](../../.ai/handoffs/handoff-0008.md): post-reboot CUDA execution smoke test, repeated matched 32K/98K MTP measurements, buffered host phase markers and HIP+CUDA dependency attribution. Keep both HIP tuning experiments unset; use **28 build jobs** and no GitHub Actions. Stop on a recurring NVIDIA Xid or other genuine hardware failure.
 
 The original `/home/chris/workspace/llama.cpp` checkout is not part of this experiment and should remain unchanged.
