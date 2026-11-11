@@ -2,6 +2,12 @@
 
 Last reviewed: 2026-11-11. This is an experiment on our fork, not an upstream change or a verified speedup.
 
+## Iteration 0012 hardware validation update
+
+[Report 0012](../../.ai/reports/report-0012.md) verified the mixed HIP/CUDA build, sparse dispatch and CPU-reference correctness on both R9700s. The opt-in synthetic Q=4/GQA4 whole-op test (including mask compaction) measured 98K medians of 342.54 -> 135.14 us on ROCm0 and 342.98 -> 132.04 us on ROCm1. ROCm0 had an unexplained 204.53 us sparse sample in its three-run range. These are **synthetic operator** timings, not model inference speedups.
+
+The **full-model safety gate remains blocked**: real 32K/98K QSA mask unions, MTP rollback/graph reuse and mixed sequence transitions have not been observed; the compactor can silently clip an over-capacity union. Do not run full-model sparse inference until actual bounds are checked and overflow cannot produce a silently truncated result. Production defaults remain unchanged. See the next handoff for the bounded audit and fail-closed verification milestone.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
@@ -90,10 +96,10 @@ masked attention at 32768 and 98304 positions with two KV heads
 and GQA4, with F16 K/V and the existing finite/NMSE gate.
 The synthetic masks are not exact QSA model output.
 
-There is **no claim of working HIP compilation or performance**.
-The new kernel may be slower, fail to compile, or fail correctness.
-In any of those cases it remains disabled by default and should
-be rejected as a production candidate.
+At the original prototype handoff, HIP compilation and runtime performance
+were not yet verified. Report 0012 subsequently passed the hardware
+operator gates; **live QSA mask safety and model-level correctness are still
+unverified**, so the path remains disabled by default.
 
 ## Explicit go/no-go gates
 
