@@ -1076,7 +1076,7 @@ static void ggml_cuda_qsa_dump_first_inputs(ggml_backend_cuda_context & ctx, con
     memcpy(&max_bias, (const float *) dst->op_params + 1, sizeof(float));
     memcpy(&softcap,  (const float *) dst->op_params + 2, sizeof(float));
     fprintf(stderr,
-            "QSA_INPUT_META backend=HIP device=%d id=%ld tensor=%s scale=%.9g max_bias=%.9g softcap=%.9g sinks=%d\\n",
+            "QSA_INPUT_META backend=HIP device=%d id=%ld tensor=%s scale=%.9g max_bias=%.9g softcap=%.9g sinks=%d\n",
             ctx.device, audit_id, dst->name, scale, max_bias, softcap, dst->src[4] != nullptr ? 1 : 0);
     for (int i = 0; i < 3; ++i) {
         const ggml_tensor * t = dst->src[i];
