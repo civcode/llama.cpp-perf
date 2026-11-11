@@ -2,7 +2,7 @@
 
 Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed CUDA + HIP inference using [civcode/llama.cpp-perf](https://github.com/civcode/llama.cpp-perf).
 
-**Status (2026-11-11):** Reports 0001–0003 identified HIP waits and long-context attention as possible targets; no safe transfer/synchronization optimization was established. Reports 0004–0007 ruled out GQA regrouping and attention KV parallel-block tuning for the tested Radeon kernels. After the reboot, Report 0008 reproduced three-device MTP throughput of ~59 t/s at 32K and ~40 t/s at 98K with matched 204 verification steps. **Report 0009 recovered both HIP GPU step-aligned data and usable NVIDIA CUDA timelines.** Target-sync grew 29.895 → 37.717 ms (HIP-profiled); Radeon flash-attention execution and busy time also grew, and the separate CUDA traces showed no CUDA GPU kernels or copies during target-sync. The complete cross-device dependency chain and ~19–21 ms per-step end-to-end delta remain unproven. **Handoff 0010** analyzes the two ordered HIP sync waits separately and maps them to scheduler backends, using mostly existing raw traces. Both HIP tuning options remain disabled, and no validated model-level speedup has been established.
+**Status (2026-11-11):** Reports 0001–0003 identified context-dependent HIP waits and flash-attention kernel growth. Reports 0004–0007 ruled out the tested GQA regrouping and parallel KV block-count variants; these diagnostic flags remain off. After the system reboot, Report 0008 reproduced approximately 59 vs 40 t/s at 32K vs 98K with matching 204 MTP verification steps and accepted counts. Reports 0009–0010 recovered CUDA and verification-aligned HIP traces and identified two sequential target synchronization waits, **ROCm0 +4.417 ms** and **ROCm1 +3.404 ms** (HIP-profiled medians) as context grows. Flash-attention is the principal growing Radeon kernel family, but a complete cross-device causal latency decomposition remains unproven. Handoff 0011 tests one disabled-by-default **RDNA WMMA vs tile kernel** dispatch at the 4-query 256x256/GQA4 boundary, gated on CPU-reference correctness and fixed-work speed. Normal inference defaults are unchanged, and no validated model-level speedup has been established.
 
 ## Documents
 
@@ -34,6 +34,11 @@ Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed C
 - [Collaborative handoff 0009](../../.ai/handoffs/handoff-0009.md) - preserve profiler host markers at request completion, recover NVIDIA importer and correlate HIP/CUDA work with MTP steps.
 - [Report 0009](../../.ai/reports/report-0009.md) - Nsight importer recovery, 204-step HIP alignment and longer Radeon attention execution during target waits.
 - [Collaborative handoff 0010](../../.ai/handoffs/handoff-0010.md) - split two HIP stream synchronizations per verification step and associate with scheduler/backend ordering.
+- [Report 0010](../../.ai/reports/report-0010.md) - confirmed ordered ROCm0 then ROCm1 target waits; relative wait and kernel-family growth.
+- [Collaborative handoff 0011](../../.ai/handoffs/handoff-0011.md) - opt-in 256x256 GQA4 Q=4 WMMA-vs-tile correctness and fixed-work A/B.
+- [WMMA Q4 diagnostic guard](../../ggml/src/ggml-cuda/fattn-wmma-q4-tune.h) - strict `GGML_HIP_FATTN_FORCE_WMMA_Q4=1`; no default changes.
+- [MTP-shaped flash-attention tests](../../tests/test-backend-ops.cpp) - `GGML_TEST_MTP_FA=1` adds deterministic Q=4 CPU reference/performance cases at 32K and 98K.
+- [K/V scan-rate estimator](tools/kv_attention_bandwidth.py) - logical byte model only, **not** measured DRAM counters.
 - [Benchmark results](BENCHMARK-RESULTS.md) - measured throughput, context-depth scaling, limitations, and initial hypotheses.
 - [Original auto-fit benchmark](raw/results-20261111-140511.md) - unmodified uploaded Markdown table (24 tests).
 - [Original fixed-split benchmark](raw/results-fixed-split-20261111-142812.md) - unmodified uploaded Markdown table (6 tests).
@@ -65,6 +70,6 @@ At 163,840 tokens of prefilled depth, the auto-fit target-only benchmark reports
 
 This is evidence of context-length sensitivity, **not** evidence that any one kernel (QSA, experts, transfers, or scheduling) is the cause.
 
-**Next checkpoint:** complete [handoff 0010](../../.ai/handoffs/handoff-0010.md): first reanalyze existing matched 32K/98K ROCPD host/API/kernel traces for wait #1 vs #2 and the Radeon tail; identify backend identities using short opt-in logging only if needed. No unsupported `nvprof` or lengthy blind profiles. Use **28 build jobs**, no GitHub Actions and leave inference defaults unchanged.
+**Next checkpoint:** complete [handoff 0011](../../.ai/handoffs/handoff-0011.md): check whether the existing RDNA WMMA attention kernel outperforms the tile kernel for the actual Q=4 MTP verification shape at 32K/98K, **after CPU-reference correctness and confirmed kernel dispatch**. Run full-model MTP A/B only if both R9700 devices show a reproducible device-local win. Use **28 build jobs**, no GitHub Actions and leave inference defaults unchanged.
 
 The original `/home/chris/workspace/llama.cpp` checkout is not part of this experiment and should remain unchanged.

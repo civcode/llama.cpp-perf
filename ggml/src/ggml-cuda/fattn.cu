@@ -4,6 +4,9 @@
 #include "fattn-tile.cuh"
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
+#include "fattn-wmma-q4-tune.h"
+
+#include <cstdlib>
 
 #if !defined(GGML_USE_MUSA)
 
@@ -685,6 +688,20 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && mask && Q->ne[0] != 40 && Q->ne[0] != 72 ?
             BEST_FATTN_KERNEL_MMA_F16 : BEST_FATTN_KERNEL_NONE;
     }
+
+#if defined(GGML_USE_HIP)
+    // Opt-in comparison for the 4-query RDNA GQA4 verification boundary.
+    // Default kernel selection is unchanged.
+    static const char * const wmma_q4_env = std::getenv("GGML_HIP_FATTN_FORCE_WMMA_Q4");
+    if (ggml_cuda_fattn_wmma_q4_tune::should_force(
+            GGML_CUDA_CC_IS_RDNA(cc), amd_wmma_available(cc),
+            Q->ne[0], V->ne[0], K->ne[0], Q->ne[1], Q->ne[3], gqa_ratio,
+            gqa_opt_applies,
+            K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
+            wmma_q4_env)) {
+        return BEST_FATTN_KERNEL_MMA_F16;
+    }
+#endif
 
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.

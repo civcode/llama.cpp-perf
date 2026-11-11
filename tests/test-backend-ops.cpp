@@ -12939,6 +12939,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     }
 
+    // Opt-in MTP verification-shaped Q=4 tests (one token plus three drafts).
+    // Use a separate gate to avoid increasing existing long-KV test cost.
+    if (const char * value = std::getenv("GGML_TEST_MTP_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {32768, 98304}) {
+            test_cases.emplace_back(new test_flash_attn_ext_long_kv(
+                256, 256, 2, {4, 1}, kv, 4, true, false, 0.0f, 0.0f,
+                GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+
     // prefill-shaped cases with long KV (nb >= 32, kv >= 1024): covers the
     // XMX/GEMM-accelerated SYCL FA path which only activates for these shapes.
     for (int kv : { 1024, 2048, }) {
@@ -13482,6 +13492,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    if (const char * value = std::getenv("GGML_TEST_MTP_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {32768, 98304}) {
+            test_cases.emplace_back(new test_flash_attn_ext_long_kv(
+                256, 256, 2, {4, 1}, kv, 4, true, false, 0.0f, 0.0f,
+                GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
 
     for (float n : {128.0f, 4096.0f, 32768.0f, 1048576.0f}) {
         test_cases.emplace_back(new test_arange(GGML_TYPE_F32, 0.0f, n, 1.0f));
