@@ -16,8 +16,8 @@ def write_run(root: Path, name: str, *, nudge: float = 0.0,
     folder.mkdir()
     q = (np.arange(32, dtype=np.float32).reshape(1, 4, 4, 2) - 10) / 32
     # Noncontiguous K and V, with gaps between feature entries.
-    kb = np.arange(128, dtype=np.float16).reshape(1, 2, 8, 4) / 80
-    vb = (np.arange(128, dtype=np.float16).reshape(1, 2, 8, 4) - 32) / 64
+    kb = np.arange(64, dtype=np.float16).reshape(1, 2, 8, 4) / 80
+    vb = (np.arange(64, dtype=np.float16).reshape(1, 2, 8, 4) - 32) / 64
     k = kb[..., ::2]
     v = vb[..., ::2]
     if change_k:
