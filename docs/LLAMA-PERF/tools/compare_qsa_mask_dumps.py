@@ -166,7 +166,9 @@ def compare_logs(dense: Path, sparse: Path) -> dict:
         raise ValueError(f"backend/device sets differ: {sorted(a)} vs {sorted(b)}")
     summary = {"dense_log": str(dense), "sparse_log": str(sparse),
                "groups_audited": 0, "groups_with_raw_dump": 0,
-               "groups_different": 0, "first_difference_per_device": [],
+               "groups_different": 0, "union_count_differences": 0,
+               "first_union_count_difference_per_device": [],
+               "first_difference_per_device": [],
                "by_device": []}
     for key in sorted(a):
         before, after = a[key], b[key]
@@ -174,11 +176,21 @@ def compare_logs(dense: Path, sparse: Path) -> dict:
             raise ValueError(f"mask row count differs for {key}: {len(before)} vs {len(after)}")
         count = 0
         first = None
+        first_union_diff = None
         for ordinal, (ra, rb) in enumerate(zip(before, after)):
             ra["ordinal"] = rb["ordinal"] = ordinal
             for f in ("kv", "bound", "capacity", "qheads", "kvheads", "stream"):
                 if ra[f] != rb[f]:
                     raise ValueError(f"misaligned audit row for {key} ordinal {ordinal}: {f}")
+            if ra["union"] != rb["union"]:
+                summary["union_count_differences"] += 1
+                if first_union_diff is None:
+                    first_union_diff = {
+                        "backend": key[0], "device": key[1],
+                        "per_device_ordinal": ordinal,
+                        "dense_union": ra["union"], "sparse_union": rb["union"],
+                        "dense_id": ra["id"], "sparse_id": rb["id"],
+                    }
             if (ra["dump"] is None) != (rb["dump"] is None):
                 raise ValueError(f"one-sided dump for {key} ordinal {ordinal}")
             if ra["dump"] is None:
@@ -195,6 +207,8 @@ def compare_logs(dense: Path, sparse: Path) -> dict:
             "backend": key[0], "device": key[1],
             "audited": len(before), "raw_differences": count,
         })
+        if first_union_diff is not None:
+            summary["first_union_count_difference_per_device"].append(first_union_diff)
         if first is not None:
             summary["first_difference_per_device"].append(first)
     if not summary["groups_with_raw_dump"]:
