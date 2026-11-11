@@ -40,7 +40,7 @@ class TestROCPDStepAlignment(unittest.TestCase):
                     CREATE TABLE kernels (
                         agent_abs_index INTEGER, start INTEGER, end INTEGER, name TEXT);
                     CREATE TABLE regions_and_samples (
-                        name TEXT, category TEXT, start INTEGER, end INTEGER);
+                        name TEXT, category TEXT, tid INTEGER, start INTEGER, end INTEGER);
                 """)
                 for i in range(6):
                     start = 2_000_000_000 + i * 20_000_000
@@ -50,9 +50,12 @@ class TestROCPDStepAlignment(unittest.TestCase):
                     db.execute("INSERT INTO kernels VALUES(?,?,?,?)",
                                (2, start+2_000_000, start+7_000_000,
                                 "mul_mat_vec_q"))
-                    db.execute("INSERT INTO regions_and_samples VALUES(?,?,?,?)",
+                    db.execute("INSERT INTO regions_and_samples VALUES(?,?,?,?,?)",
                                ("hipStreamSynchronize", "HIP_RUNTIME_API_EXT",
-                                start, start+1_000_000))
+                                123, start+1_000_000, start+5_000_000))
+                    db.execute("INSERT INTO regions_and_samples VALUES(?,?,?,?,?)",
+                               ("hipStreamSynchronize", "HIP_RUNTIME_API_EXT",
+                                123, start+5_000_000, start+9_000_000))
                 db.commit()
             output = root / "windows.csv"
             report = analyze(tsv, dbpath, "auto", output)
@@ -67,7 +70,18 @@ class TestROCPDStepAlignment(unittest.TestCase):
             self.assertAlmostEqual(report["per_gpu_amd_kernel_overlap"]["1"]
                                    ["median_flash_overlap_ms"], 4)
             self.assertEqual(len(report["steps"]), 6)
-            self.assertEqual(report["top_hip_host_apis"][0]["count"], 6)
+            self.assertEqual(report["top_hip_host_apis"][0]["count"], 12)
+            self.assertEqual(report["hip_sync_wait_counts_per_step"], {2: 6})
+            self.assertEqual(
+                report["hip_sync_wait_positions"]["1"]["observed_steps"], 6)
+            self.assertEqual(
+                report["hip_sync_wait_positions"]["2"]["observed_steps"], 6)
+            self.assertEqual(
+                report["hip_sync_wait_positions"]["2"]["last_amd_agent_counts"],
+                {"2": 6})
+            self.assertEqual(len(report["steps"][0]["hip_stream_sync_waits"]), 2)
+            self.assertEqual(
+                report["steps"][0]["hip_stream_sync_waits"][1]["last_amd_agent"], "2")
             self.assertTrue(output.is_file())
             with self.assertRaisesRegex(ValueError, "do not overlap enough"):
                 analyze(tsv, dbpath, "raw", None)

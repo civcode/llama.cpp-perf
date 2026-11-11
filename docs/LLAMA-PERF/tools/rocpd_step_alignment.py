@@ -123,6 +123,50 @@ def aggregate_overlap(kernels):
     return grouped, family_sum
 
 
+def load_hip_sync_calls(db, begin, finish):
+    """Return HIP host API wait intervals, indexed by Linux OS thread ID.
+
+    HIP API timestamps must already share the calibrated host clock. These
+    records do NOT label the GPU/stream waited on; kernel overlap is only a
+    temporal association, not an event dependency.
+    """
+    calls = defaultdict(list)
+    for tid, start, end in db.execute("""
+        SELECT tid,start,end FROM regions_and_samples
+        WHERE name = 'hipStreamSynchronize' AND start < ? AND end > ?
+        ORDER BY tid,start
+    """, (finish, begin)):
+        if tid is None or end is None or start is None or end <= start:
+            continue
+        calls[int(tid)].append((int(start), int(end)))
+    return calls
+
+
+def wait_breakdown(records, starts, ends_prefix, a, b):
+    """Kernel activity clipped to one specific HIP API wait on the host."""
+    clipped = clipped_for_window(records, starts, ends_prefix, a, b)
+    groups, families = aggregate_overlap(clipped)
+    last = max(clipped, key=lambda x: x[1], default=None)
+    return {
+        "duration_ms": round((b - a)/1e6, 5),
+        "gpu_busy_union_ms": {
+            gpu: round(busy_union_ns(ranges)/1e6, 5)
+            for gpu, ranges in groups.items()
+        },
+        "gpu_families_ms": {
+            gpu: {
+                family: round(sum(ns for (dev, fam), ns in families.items()
+                                  if dev == gpu and fam == family)/1e6, 5)
+                for family in sorted({fam for (dev, fam) in families if dev == gpu})
+            }
+            for gpu in groups
+        },
+        "last_amd_agent": last[2] if last else None,
+        "last_amd_kernel_family": last[3] if last else None,
+        "last_amd_kernel_to_wait_end_ms": round((b-last[1])/1e6, 5) if last else None,
+    }
+
+
 def read_hip_apis(db, begin, finish):
     # Use only known stable view columns. CPU API timestamps reveal *host*
     # activity, not the device kernel a synchronization waited for.
@@ -151,6 +195,8 @@ def analyze(host_path, db_path, clock, rows_path, phase="target_sync", offset_ns
         times = clock_bounds(targets, domain, offset_ns)
         starts = [row[0] for row in kernels]
         prefix_ends = prefixed_maximum_end(kernels)
+        sync_api_by_tid = load_hip_sync_calls(
+            db, min(a for a, _ in times), max(b for _, b in times))
         timeline = []
         for target, (a, b) in zip(targets, times):
             observed = clipped_for_window(kernels, starts, prefix_ends, a, b)
@@ -158,12 +204,22 @@ def analyze(host_path, db_path, clock, rows_path, phase="target_sync", offset_ns
             gpu_busy = {gpu: busy_union_ns(ranges)/1e6
                         for gpu, ranges in gpu_ranges.items()}
             latest_gpu_end = max((end for _, end, _, _ in observed), default=None)
+            waits = []
+            for start_api, end_api in sync_api_by_tid.get(target["start_tid"], []):
+                aa, bb = max(a, start_api), min(b, end_api)
+                if bb <= aa:
+                    continue
+                breakdown = wait_breakdown(kernels, starts, prefix_ends, aa, bb)
+                breakdown["start_offset_ms"] = round((aa-a)/1e6, 5)
+                waits.append(breakdown)
+            waits.sort(key=lambda w: w["start_offset_ms"])
             timeline.append({
                 "step_before": target["step_before"],
                 "start_ns": a,
                 "end_ns": b,
                 "host_sync_ms": target["duration_ms"],
                 "kernels_clipped": len(observed),
+                "hip_stream_sync_waits": waits,
                 "amd_gpu_union_ms": gpu_busy,
                 "amd_flash_ms": {gpu: round(ns/1e6, 4)
                                  for (gpu, family), ns in by_family.items()
@@ -179,7 +235,7 @@ def analyze(host_path, db_path, clock, rows_path, phase="target_sync", offset_ns
         with rows_path.open("w", newline="", encoding="utf-8") as handle:
             fields = [
                 "step_before", "start_ns", "end_ns", "host_sync_ms",
-                "kernels_clipped", "amd_gpu_union_ms", "amd_flash_ms",
+                "kernels_clipped", "hip_stream_sync_waits", "amd_gpu_union_ms", "amd_flash_ms",
                 "last_amd_kernel_end_minus_sync_end_ms",
             ]
             writer = csv.DictWriter(handle, fieldnames=fields)
@@ -187,6 +243,39 @@ def analyze(host_path, db_path, clock, rows_path, phase="target_sync", offset_ns
             for item in timeline:
                 writer.writerow({key: json.dumps(item[key]) if isinstance(item[key], dict)
                                  else item[key] for key in fields})
+
+    # A pair of HIP waits is common for the two Radeon backends, but this
+    # analysis never assumes fixed call count or assigns an API to a device.
+    wait_count_histogram = defaultdict(int)
+    waits_by_position = defaultdict(list)
+    for step in timeline:
+        wait_count_histogram[len(step["hip_stream_sync_waits"])] += 1
+        for position, call in enumerate(step["hip_stream_sync_waits"], 1):
+            waits_by_position[position].append(call)
+    wait_position_summary = {}
+    for position, calls in sorted(waits_by_position.items()):
+        wait_position_summary[str(position)] = {
+            "observed_steps": len(calls),
+            "median_api_duration_ms": statistics.median(w["duration_ms"] for w in calls),
+            "median_offset_ms": statistics.median(w["start_offset_ms"] for w in calls),
+            "last_amd_agent_counts": dict(
+                (agent, sum(1 for w in calls if w["last_amd_agent"] == agent))
+                for agent in sorted({w["last_amd_agent"] for w in calls
+                                     if w["last_amd_agent"] is not None})),
+            "per_gpu_median_busy_overlap_ms": {
+                agent: statistics.median(
+                    w["gpu_busy_union_ms"].get(agent, 0.0) for w in calls)
+                for agent in sorted({agent for w in calls for agent
+                                     in w["gpu_busy_union_ms"]})
+            },
+            "per_gpu_median_flash_overlap_ms": {
+                agent: statistics.median(
+                    w["gpu_families_ms"].get(agent, {}).get("flash_attention", 0.0)
+                    for w in calls)
+                for agent in sorted({agent for w in calls for agent
+                                     in w["gpu_families_ms"]})
+            },
+        }
 
     devices = sorted({gpu for w in timeline for gpu in w["amd_gpu_union_ms"]})
     aggregate = {}
@@ -210,6 +299,8 @@ def analyze(host_path, db_path, clock, rows_path, phase="target_sync", offset_ns
         "unpaired_host_events": len(unpaired),
         "median_host_sync_ms": statistics.median(w["duration_ms"] for w in targets),
         "per_gpu_amd_kernel_overlap": aggregate,
+        "hip_sync_wait_counts_per_step": dict(sorted(wait_count_histogram.items())),
+        "hip_sync_wait_positions": wait_position_summary,
         "top_hip_host_apis": [{"name": name, "count": count, "sum_ms": round(ms, 3)}
                               for name, count, ms in apis],
         "steps": timeline,
@@ -246,6 +337,14 @@ def main():
         print(f"  GPU {gpu}: median busy overlap "
               f"{info['median_amd_busy_overlap_ms']:.3f} ms, "
               f"median flash-attention overlap {info['median_flash_overlap_ms']:.3f} ms")
+    print("HIP stream synchronizations inside each phase:")
+    print(f"  Wait count distribution: {report['hip_sync_wait_counts_per_step']}")
+    for position, info in report["hip_sync_wait_positions"].items():
+        print(f"  Wait #{position}: median {info['median_api_duration_ms']:.3f} ms, "
+              f"AMD tail agents {info['last_amd_agent_counts']}; "
+              f"median GPU busy overlap {info['per_gpu_median_busy_overlap_ms']}")
+    print("IMPORTANT: HIP host API position does not by itself establish which "
+          "GPU stream or backend was synchronized.")
     print("Top HIP host APIs:")
     for api in report["top_hip_host_apis"][:5]:
         print(f"  {api['name']}: {api['count']} calls, {api['sum_ms']:.1f} ms")

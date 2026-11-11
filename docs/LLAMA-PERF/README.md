@@ -2,7 +2,7 @@
 
 Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed CUDA + HIP inference using [civcode/llama.cpp-perf](https://github.com/civcode/llama.cpp-perf).
 
-**Status (2026-11-11):** Handoffs 0001–0003 measured HIP synchronization, transfers and long-context attention growth without proving a removable cost. Handoffs 0004–0007 ruled out HIP 256x256 GQA regrouping and KV parallel-block tuning as performance improvements; those experimental flags remain disabled by default. After the user's reboot, **Report 0008 verified CUDA0 kernel execution and reproduced matched three-device MTP inference**: 32K ~42 ms/verification, 98K ~61–63 ms/verification, both 204 steps and 306 accepted draft tokens. Optional host markers showed larger 98K durations in draft (~+2.0 ms), target submission (~+4.3 ms), target wait (~+8.3 ms) and speculative reprocessing (~+3.3 ms), but those are not an additive GPU critical-path decomposition. **GPU cause remains unproven** because the HIP profile lacked request-end host markers and Nsight Systems could not import its CUDA stream. Handoff 0009 implements request-completion trace snapshots and ROCpd step-window attribution, and targets the CUDA importer failure. No production default or validated model-level speedup has changed.
+**Status (2026-11-11):** Reports 0001–0003 identified HIP waits and long-context attention as possible targets; no safe transfer/synchronization optimization was established. Reports 0004–0007 ruled out GQA regrouping and attention KV parallel-block tuning for the tested Radeon kernels. After the reboot, Report 0008 reproduced three-device MTP throughput of ~59 t/s at 32K and ~40 t/s at 98K with matched 204 verification steps. **Report 0009 recovered both HIP GPU step-aligned data and usable NVIDIA CUDA timelines.** Target-sync grew 29.895 → 37.717 ms (HIP-profiled); Radeon flash-attention execution and busy time also grew, and the separate CUDA traces showed no CUDA GPU kernels or copies during target-sync. The complete cross-device dependency chain and ~19–21 ms per-step end-to-end delta remain unproven. **Handoff 0010** analyzes the two ordered HIP sync waits separately and maps them to scheduler backends, using mostly existing raw traces. Both HIP tuning options remain disabled, and no validated model-level speedup has been established.
 
 ## Documents
 
@@ -32,6 +32,8 @@ Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed C
 - [Report 0008](../../.ai/reports/report-0008.md) - matched 32K/98K MTP reproduction and host stage timings; full GPU timeline unresolved.
 - [Host step/ROCPD alignment tool](tools/rocpd_step_alignment.py) - read-only, clock-checked Radeon kernel overlap per MTP verification window; does not cover CUDA.
 - [Collaborative handoff 0009](../../.ai/handoffs/handoff-0009.md) - preserve profiler host markers at request completion, recover NVIDIA importer and correlate HIP/CUDA work with MTP steps.
+- [Report 0009](../../.ai/reports/report-0009.md) - Nsight importer recovery, 204-step HIP alignment and longer Radeon attention execution during target waits.
+- [Collaborative handoff 0010](../../.ai/handoffs/handoff-0010.md) - split two HIP stream synchronizations per verification step and associate with scheduler/backend ordering.
 - [Benchmark results](BENCHMARK-RESULTS.md) - measured throughput, context-depth scaling, limitations, and initial hypotheses.
 - [Original auto-fit benchmark](raw/results-20261111-140511.md) - unmodified uploaded Markdown table (24 tests).
 - [Original fixed-split benchmark](raw/results-fixed-split-20261111-142812.md) - unmodified uploaded Markdown table (6 tests).
@@ -63,6 +65,6 @@ At 163,840 tokens of prefilled depth, the auto-fit target-only benchmark reports
 
 This is evidence of context-length sensitivity, **not** evidence that any one kernel (QSA, experts, transfers, or scheduling) is the cause.
 
-**Next checkpoint:** complete [handoff 0009](../../.ai/handoffs/handoff-0009.md): validate request-finish host snapshots, join HIP kernel work to real 32K/98K verification windows with calibrated clocks, and recover the Nsight Systems CUDA kernel timeline or document its exact tooling blocker. Use **28 build jobs** and no GitHub Actions; both HIP experiments remain unset and production defaults unchanged.
+**Next checkpoint:** complete [handoff 0010](../../.ai/handoffs/handoff-0010.md): first reanalyze existing matched 32K/98K ROCPD host/API/kernel traces for wait #1 vs #2 and the Radeon tail; identify backend identities using short opt-in logging only if needed. No unsupported `nvprof` or lengthy blind profiles. Use **28 build jobs**, no GitHub Actions and leave inference defaults unchanged.
 
 The original `/home/chris/workspace/llama.cpp` checkout is not part of this experiment and should remain unchanged.

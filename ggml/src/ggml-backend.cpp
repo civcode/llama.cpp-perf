@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <chrono>
 #include <unordered_map>
 #include <vector>
 
@@ -2481,8 +2482,35 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
+
+    // Opt-in diagnostic only: identify the particular backend behind a long
+    // existing scheduler synchronization. This does NOT add or remove any
+    // device synchronization, and is off in production.
+    static const bool trace_sync = [] {
+        const char * env = getenv("GGML_SCHED_SYNC_TRACE");
+        return env != NULL && strcmp(env, "1") == 0;
+    }();
+
     for (int i = 0; i < sched->n_backends; i++) {
+        if (!trace_sync) {
+            ggml_backend_synchronize(sched->backends[i]);
+            continue;
+        }
+
+        const auto started = std::chrono::steady_clock::now();
         ggml_backend_synchronize(sched->backends[i]);
+        const auto finished = std::chrono::steady_clock::now();
+
+        const auto wait_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started).count();
+        // Ignore very short calls to avoid flooding prefill logs. Enable
+        // only for a bounded diagnostic request, not a throughput benchmark.
+        if (wait_ns >= 1000000) {
+            const auto start_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                started.time_since_epoch()).count();
+            fprintf(stderr, "GGML_SCHED_SYNC_TRACE backend=%d name=%s start_ns=%lld duration_ns=%lld\n",
+                i, ggml_backend_name(sched->backends[i]),
+                (long long) start_ns, (long long) wait_ns);
+        }
     }
     if (!sched->is_alloc) {
         // if the graph is not already allocated, always use copy 0 after a synchronization
