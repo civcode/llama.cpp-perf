@@ -9218,12 +9218,52 @@ struct test_flash_attn_ext_qsa_sparse : public test_flash_attn_ext_long_kv {
     }
 };
 
+// Separate GQA12 validation: four queries, 24 Q heads / 2 KV heads.
+// The narrow fixture reuses the original QSA-like pattern (union 2048).
+// The wide fixture has 2048 positions/query but an exact 5120-position
+// four-query union, closer to the long-context live-mask distribution.
+struct test_flash_attn_ext_qsa_gqa12 : public test_flash_attn_ext_qsa_sparse {
+    const bool wide_union;
+    test_flash_attn_ext_qsa_gqa12(int64_t kv, bool wide) :
+        test_flash_attn_ext_qsa_sparse(
+            256, 256, 2, {12, 1}, kv, 4, true, false, 0.0f, 0.0f,
+            GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16,
+            {0, 1, 2, 3}, true, false, 2051), wide_union(wide) {}
+
+    std::string vars() override {
+        return test_flash_attn_ext_qsa_sparse::vars() +
+               ",qsa_gqa12=1,wide_union=" + std::to_string(wide_union);
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        if (!wide_union) {
+            test_flash_attn_ext_qsa_sparse::initialize_tensors(ctx);
+            return;
+        }
+        test_flash_attn_ext_long_kv::initialize_tensors(ctx);
+        ggml_tensor * mask = ggml_get_tensor(ctx, "m");
+        GGML_ASSERT(mask && mask->type == GGML_TYPE_F16 && mask->ne[1] == 4);
+        const int64_t n_kv = mask->ne[0];
+        GGML_ASSERT(n_kv % 8192 == 0);
+        const int64_t stride = n_kv / 8192;
+        std::vector<ggml_fp16_t> vals(ggml_nelements(mask), ggml_fp32_to_fp16(-INFINITY));
+        for (int q = 0; q < 4; ++q) {
+            for (int64_t i = 0; i < 2048; ++i) {
+                const int64_t pos = (int64_t(q)*1024 + i)*stride;
+                vals[size_t(q)*n_kv + pos] =
+                    ggml_fp32_to_fp16(-0.015625f * static_cast<float>((i + q) % 7));
+            }
+        }
+        ggml_backend_tensor_set(mask, vals.data(), 0, vals.size()*sizeof(vals[0]));
+    }
+};
+
 // Disjoint Q rows exercise the Q4 union capacity rather than just per-row counts.
 // The overflow fixture deliberately violates the declared per-query bound.
 struct test_flash_attn_ext_qsa_bound : public test_flash_attn_ext_long_kv {
     const int delta;
-    explicit test_flash_attn_ext_qsa_bound(int d) :
-        test_flash_attn_ext_long_kv(256, 256, 2, {4, 1}, 32768, 4, true, false, 0.0f, 0.0f,
+    explicit test_flash_attn_ext_qsa_bound(int d, int gqa = 4) :
+        test_flash_attn_ext_long_kv(256, 256, 2, {gqa, 1}, 32768, 4, true, false, 0.0f,
                                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16,
                                    {0, 1, 2, 3}, true, false, 2048), delta(d) {}
     std::string vars() override {
@@ -13027,6 +13067,22 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     if (const char * value = std::getenv("GGML_TEST_QSA_BOUND_FA"); value != nullptr && std::atoi(value) != 0) {
         for (int delta : {-1, 0, 1}) {
             test_cases.emplace_back(new test_flash_attn_ext_qsa_bound(delta));
+        }
+    }
+
+    // GQA12 Q4 MTP attention has 24 Q heads and 2 KV heads. The new
+    // selector has its own flag; fixtures are opt-in and do not modify defaults.
+    if (const char * value = std::getenv("GGML_TEST_QSA_GQA12_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {32768, 98304}) {
+            for (bool wide : {false, true}) {
+                test_cases.emplace_back(new test_flash_attn_ext_qsa_gqa12(kv, wide));
+            }
+        }
+    }
+
+    if (const char * value = std::getenv("GGML_TEST_QSA_GQA12_BOUND_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int delta : {-1, 0, 1}) {
+            test_cases.emplace_back(new test_flash_attn_ext_qsa_bound(delta, 12));
         }
     }
 
