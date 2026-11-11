@@ -2,11 +2,15 @@
 
 Last reviewed: 2026-11-11. This is an experiment on our fork, not an upstream change or a verified speedup.
 
+## Iteration 0014 validation update
+
+[Report 0014](../../.ai/reports/report-0014.md) validates the separately gated GQA12 operator and overflow rejection on both R9700s. A short 32K model probe confirmed sparse launches and matching output/acceptance history, but measured mask-union differences versus a reproducible dense baseline. Fixed-token logits and recurrent-state correctness remain unverified; no end-to-end performance claim or default promotion is justified.
+
 ## Iteration 0013 safety and model update
 
 [Report 0013](../../.ai/reports/report-0013.md) records dense-path actual masks at both depths and an opt-in Q4 overflow check which aborts before gather on overflow. The check synchronizes the HIP stream and disables HIP graph capture while the sparse experiment is enabled; it is a safety prototype, not a performance-ready implementation. `GGML_QSA_MASK_AUDIT=<1..100000>` enables bounded, synchronous consumer-mask logging and disables GPU graph capture; see the report for coverage and limitations. Leave both variables unset in normal operation.
 
-The tested model's actual Q/KV head counts are 24/2, i.e. GQA12. The present experimental selector requires GQA4, so it cannot activate for that model. Do not infer a model speedup from the GQA4 microbenchmark, broaden its shape guards, or run sparse model inference without the remaining safety/numerical gates.
+The tested model's actual Q/KV head counts are 24/2, i.e. GQA12. The original selector requires GQA4 and cannot activate for that model. Do not infer a model speedup from the GQA4 microbenchmark or broaden its shape guards.
 
 ## Iteration 0012 hardware validation update
 
@@ -18,9 +22,9 @@ At that point the **full-model safety gate remained blocked**: real QSA mask uni
 
 [Report 0013](../../.ai/reports/report-0013.md) audited the *actual* Q=4 final F16 masks with sparse dispatch disabled and GPU graph capture/replay disabled by the audit. At 32K/98K, the measured maximum per-query mask count was <= 2051 and maximum four-query unions were 5493 / 5863, below the 8204 allocated capacity. Accepted and rejected drafts were observed, but these samples do **not** cover GPU replay, mixed sequences or fixed-token logits/GDN-state equivalence. The Q4 experimental compactor now synchronously checks *unclamped* union counts before gather and fails closed on overflow; this adds per-operation synchronization and invalidates Report 0012's performance numbers for the modified path.
 
-The target model's 24 Q heads / 2 KV heads imply **GQA12**, not GQA4. The original `GGML_HIP_QSA_SPARSE_Q4=1` guard remains GQA4-only. A **separate, unverified** prototype, `GGML_HIP_QSA_SPARSE_Q4_GQA12=1`, opts into the existing sparse 256x256, (ncols1,ncols2)=(4,4) WMMA specialization for RDNA Q=4/GQA12. Conceptually, GQA12 uses three ncols2=4 tiles per KV head, sharing the one Q4 mask-union index list; this is a dispatch hypothesis, not a device correctness claim. The new selector requires exactly the original dimensions, types, alignment/optimization eligibility, one sequence and positive selection bound, except it requires GQA12 rather than GQA4. Both flags are disabled by default and independent.
+The target model's 24 Q heads / 2 KV heads imply **GQA12**, not GQA4. The original `GGML_HIP_QSA_SPARSE_Q4=1` guard remains GQA4-only. A **separate** prototype, `GGML_HIP_QSA_SPARSE_Q4_GQA12=1`, opts into the existing sparse 256x256, (ncols1,ncols2)=(4,4) WMMA specialization for RDNA Q=4/GQA12. Conceptually, GQA12 uses three ncols2=4 tiles per KV head, sharing the one Q4 mask-union index list; see Report 0014 for device validation. The new selector requires exactly the original dimensions, types, alignment/optimization eligibility, one sequence and positive selection bound, except it requires GQA12 rather than GQA4. Both flags are disabled by default and independent.
 
-Host-side C++17 selector tests and static fixture-cardinality checks passed in the Chat AI runtime. **Mixed HIP/CUDA compilation, device-local numerical correctness, actual GQA12 sparse dispatch and speed are unverified.** Opt-in `GGML_TEST_QSA_GQA12_FA=1` adds test/perf fixtures at KV32768 and KV98304 with 2048 and 5120-position unions; `GGML_TEST_QSA_GQA12_BOUND_FA=1` adds 8191/8192/8193 boundary tests in correctness mode. Every sparse model experiment must still pass safety and fixed-token/GDN correctness gates first.
+Host-side C++17 selector tests and static fixture-cardinality checks passed in the Chat AI runtime. These checks were subsequently performed in Report 0014; model-level numerical correctness remains unverified. Opt-in `GGML_TEST_QSA_GQA12_FA=1` adds test/perf fixtures at KV32768 and KV98304 with 2048 and 5120-position unions; `GGML_TEST_QSA_GQA12_BOUND_FA=1` adds 8191/8192/8193 boundary tests in correctness mode. Every sparse model experiment must still pass safety and fixed-token/GDN correctness gates first.
 
 Experimental sparse attention intentionally disables HIP graph capture/replay because of its host-synchronized overflow check. `GGML_PERF_DISABLE_CUDA_GRAPHS=1` is a **separate opt-in, graph-off dense control** (also affects mixed CUDA/HIP backends) for isolating the timing impact of graph suppression. Any eventual full-model comparison must report both production graph-enabled dense behavior and matched graph-off dense-vs-sparse timing; the latter cannot by itself establish a production speedup.
 

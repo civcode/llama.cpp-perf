@@ -1584,7 +1584,8 @@ struct test_case {
             std::vector<float> f2 = tensor_to_float(t2);
 
             const bool mtp_flash = t1->op == GGML_OP_FLASH_ATTN_EXT &&
-                (std::getenv("GGML_TEST_MTP_FA") != nullptr || std::getenv("GGML_TEST_QSA_SPARSE_FA") != nullptr);
+                (std::getenv("GGML_TEST_MTP_FA") != nullptr || std::getenv("GGML_TEST_QSA_SPARSE_FA") != nullptr ||
+                 std::getenv("GGML_TEST_QSA_GQA12_FA") != nullptr || std::getenv("GGML_TEST_QSA_GQA12_BOUND_FA") != nullptr);
             for (size_t i = 0; i < f1.size(); i++) {
                 if (mtp_flash && (!std::isfinite(f1[i]) || !std::isfinite(f2[i]))) {
                     printf("[%s] non-finite output at index %zu (%s=%f %s=%f) ", ggml_op_desc(t1), i, bn1, f1[i], bn2, f2[i]);
@@ -1613,6 +1614,28 @@ struct test_case {
                 }
             }
 
+            // A whole-tensor average can hide a broken GQA head tile. Check
+            // every head independently across all query rows and components.
+            if (mtp_flash && std::getenv("GGML_TEST_QSA_GQA12_FA") && t1->ne[1] == 24) {
+                double max_head_err = 0.0;
+                for (int64_t h = 0; h < t1->ne[1]; ++h) {
+                    std::vector<float> a, b;
+                    for (int64_t s = 0; s < t1->ne[3]; ++s) {
+                        for (int64_t q = 0; q < t1->ne[2]; ++q) {
+                            const size_t start = ((s*t1->ne[2] + q)*t1->ne[1] + h)*t1->ne[0];
+                            a.insert(a.end(), f1.begin() + start, f1.begin() + start + t1->ne[0]);
+                            b.insert(b.end(), f2.begin() + start, f2.begin() + start + t1->ne[0]);
+                        }
+                    }
+                    const double e = ud->tc->err(a.data(), b.data(), a.size());
+                    if (!std::isfinite(e) || e > ud->tc->max_err(ud->backend1)) {
+                        printf("[head=%lld NMSE=%.9g] ", (long long) h, e);
+                        ud->ok = false;
+                    }
+                    max_head_err = std::max(max_head_err, e);
+                }
+                printf("[head_NMSE_max=%.9g] ", max_head_err);
+            }
             double err = ud->tc->err(f1.data(), f2.data(), f1.size());
             if (mtp_flash) {
                 printf("[NMSE=%.9g] ", err);
@@ -9263,7 +9286,7 @@ struct test_flash_attn_ext_qsa_gqa12 : public test_flash_attn_ext_qsa_sparse {
 struct test_flash_attn_ext_qsa_bound : public test_flash_attn_ext_long_kv {
     const int delta;
     explicit test_flash_attn_ext_qsa_bound(int d, int gqa = 4) :
-        test_flash_attn_ext_long_kv(256, 256, 2, {gqa, 1}, 32768, 4, true, false, 0.0f,
+        test_flash_attn_ext_long_kv(256, 256, 2, {gqa, 1}, 32768, 4, true, false, 0.0f, 0.0f,
                                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16,
                                    {0, 1, 2, 3}, true, false, 2048), delta(d) {}
     std::string vars() override {
