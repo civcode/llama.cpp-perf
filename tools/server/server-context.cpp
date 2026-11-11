@@ -2465,6 +2465,13 @@ private:
         res->generation_params = slot.task->params; // copy the parameters
 
         queue_results.send(std::move(res));
+
+        // Persist timing events before external profilers stop the process.
+        // The final post_decode_end marker may follow this call, so that
+        // boundary triggers a second snapshot below. Disabled in normal runs.
+        server_step_trace::mark("request_finished", slot.id,
+                slot.stats.n_draft_verif_steps, slot.stats.n_gen);
+        server_step_trace::flush_now();
     }
 
     void send_embedding(const server_slot & slot, const common_batch & batch) {
@@ -3689,6 +3696,10 @@ private:
                     server_step_trace::mark("post_decode_end", trace_slot.id,
                             trace_slot.stats.n_draft_verif_steps, trace_slot.stats.n_gen,
                             n_tokens, static_cast<int32_t>(trace_slot.spec_draft.size()));
+                    if (trace_slot.state == SLOT_STATE_IDLE) {
+                        // Persist the final pair after send_final_response().
+                        server_step_trace::flush_now();
+                    }
                 }
             } catch (const std::exception & e) {
                 SRV_ERR("post_decode() failed: %s\n", e.what());

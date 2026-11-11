@@ -42,6 +42,7 @@ def parse_events(path):
             try:
                 records.append({
                     "mono_ns": int(row["mono_ns"]),
+                    "raw_ns": int(row["raw_ns"]) if row.get("raw_ns") else None,
                     "os_tid": int(row["os_tid"]),
                     "phase": row["phase"],
                     "slot_id": int(row["slot_id"]),
@@ -86,6 +87,8 @@ def match_intervals(events):
             "draft_tokens": first["draft_tokens"],
             "start_ns": first["mono_ns"],
             "end_ns": event["mono_ns"],
+            "start_raw_ns": first.get("raw_ns"),
+            "end_raw_ns": event.get("raw_ns"),
             "start_tid": first["os_tid"],
             "end_tid": event["os_tid"],
             "duration_ms": duration_ns / 1e6,
@@ -147,7 +150,7 @@ def write_windows(path, windows):
     fields = [
         "phase", "slot_id", "step_before", "generation_tokens_before",
         "batch_tokens", "draft_tokens", "start_ns", "end_ns",
-        "start_tid", "end_tid", "duration_ms",
+        "start_raw_ns", "end_raw_ns", "start_tid", "end_tid", "duration_ms",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as stream:

@@ -60,6 +60,30 @@ class TestServerStepTrace(unittest.TestCase):
         self.assertEqual(quantile([1, 2], 0.9), 1.9)
         self.assertIsNone(quantile([], 0.5))
 
+    def test_raw_clock_columns_and_legacy_compatibility(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "trace-with-raw.tsv"
+            path.write_text(
+                HEADER.rstrip("\n") + "\traw_ns\n" +
+                line(1000, "target_sync_begin").rstrip("\n") + "\t3000\n" +
+                line(7000, "target_sync_end").rstrip("\n") + "\t9000\n",
+                encoding="utf-8",
+            )
+            windows, missing = match_intervals(parse_events(path))
+            self.assertEqual(len(missing), 0)
+            self.assertEqual(windows[0]["start_raw_ns"], 3000)
+            self.assertEqual(windows[0]["end_raw_ns"], 9000)
+            # Existing TSV captures remain readable without raw_ns.
+            legacy = Path(temp) / "old.tsv"
+            legacy.write_text(
+                HEADER +
+                line(1000, "target_sync_begin") +
+                line(7000, "target_sync_end"),
+                encoding="utf-8",
+            )
+            legacy_windows, _ = match_intervals(parse_events(legacy))
+            self.assertIsNone(legacy_windows[0]["start_raw_ns"])
+
     def test_missing_columns(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "bad.tsv"
