@@ -44,6 +44,19 @@ To inspect *actual selected indices* rather than only union sizes, use the disab
 
 This instrumentation is **diagnostic only**. It is disabled when the environment flags are unset; it is neither an inference-speed test nor a GPU graph replay correctness check. See Handoff 0015 for next validation gates.
 
+## Iteration 0015 and the first-attention-output diagnostic
+
+[Report 0015](../../.ai/reports/report-0015.md) compared 273 fully validated raw QSA mask pairs in a graph-disabled, 32K real-model probe. Dense A and dense B matched **273/273 masks byte-for-byte**. Dense versus sparse differed on **210/273 masks**, with **181/273 differing four-query union counts**, while per-query counts remained unchanged. The earliest observed changed mask came from HIP0 during the final prompt-processing batch of four tokens, **before any MTP draft/accept/reject/rollback**. These measurements do not identify whether the upstream cause is sparse attention accumulation, indexer/top-k sensitivity, or another state/ordering difference. Fixed-token logits and recurrent GDN state were not measured.
+
+For the next bounded investigation, Chat AI has added an opt-in, **post-kernel F32 QSA attention output dump** and a stable model-layer name in `src/llama-graph.cpp::build_attn_mha` when `GGML_QSA_MASK_AUDIT` is present. These new diagnostics have **not been validated by a HIP/CUDA build or actual model run**. The existing F16 mask audit and dump may be paired with the new output capture by `backend/device/id`. Each output is a raw little-endian F32 tensor shaped `[value_dim, query_heads, Q_positions, streams]`. Use unique external directories for each fresh process and set:
+
+- `GGML_QSA_MASK_AUDIT=1000` plus `GGML_QSA_MASK_AUDIT_DIR=<mask-dir>` and `GGML_QSA_MASK_DUMP_LIMIT=256` to capture and validate mask inputs.
+- `GGML_QSA_ATTN_OUT_DIR=<output-dir>` and `GGML_QSA_ATTN_OUT_LIMIT=256` to synchronously save up to 256 post-kernel QSA outputs per backend/device. This requires the mask audit. With the output directory unset, no new post-kernel synchronization/dumps are performed. The output limit defaults to one if omitted.
+- `python3 docs/LLAMA-PERF/tools/test_compare_qsa_attn_out.py` to run the new host-only comparator tests (Chat AI static review only; not yet executed on the Coding Agent host).
+- `python3 docs/LLAMA-PERF/tools/compare_qsa_attn_out.py <dense.log> <other.log> > attn-output-diff.json` to report first changed layer/output, maximum absolute and relative difference, normalized error, first changed feature/head/query, and eight worst individual heads. Compare dense A versus B *first*. Separately use `compare_qsa_mask_dumps.py` to prove whether the input mask at that same operation was identical.
+
+These graph-disabled, synchronized output dumps are **diagnostics, not performance measurements**. The comparator checks tensor name, output shape, device order, mask-bound metadata and finiteness, but cannot itself prove identical Q/K/V inputs, aligned token IDs, or equivalent GDN rollback state. Infer causality only after aligning true model steps and comparing surrounding inputs. Full-model performance A/B and production promotion remain blocked; see Handoff 0016.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
