@@ -28,6 +28,22 @@ Host-side C++17 selector tests and static fixture-cardinality checks passed in t
 
 Experimental sparse attention intentionally disables HIP graph capture/replay because of its host-synchronized overflow check. `GGML_PERF_DISABLE_CUDA_GRAPHS=1` is a **separate opt-in, graph-off dense control** (also affects mixed CUDA/HIP backends) for isolating the timing impact of graph suppression. Any eventual full-model comparison must report both production graph-enabled dense behavior and matched graph-off dense-vs-sparse timing; the latter cannot by itself establish a production speedup.
 
+## Iteration 0014 and first-divergence diagnostic
+
+[Report 0014](../../.ai/reports/report-0014.md) confirms **GQA12** sparse dispatch (all 24 heads), CPU-reference correctness, fail-closed overflow tests and inclusive whole-op performance on both R9700s at 32K/98K. With the wide 5120-position union at 98K, dense/sparse medians were 963.26/186.08 us (ROCm0) and 969.62/181.35 us (ROCm1); these are synthetic operator measurements, not model speedups.
+
+A short 32K real-model graph-disabled diagnostic produced identical sampled messages and accepted/drafted outcomes, but **181/273 Q4 mask union counts differed** between dense and sparse processes (maximum count delta 52); a second independent dense process reproduced all dense union counts. This could reflect numerical sensitivity in QSA's indexer or a numerical/state error; matching sampled tokens is insufficient. Do not benchmark or promote sparse full-model inference until the earliest divergence is characterized and fixed-token logits/GDN-state comparisons are completed. Mixed-sequence and GPU graph-replay correctness are not proven.
+
+To inspect *actual selected indices* rather than only union sizes, use the disabled-by-default consumer-mask audit in two separate fresh model processes with the same tokens/seed/configuration:
+
+- `GGML_QSA_MASK_AUDIT=1000`: bounded synchronous audit of Q=4 masks. This intentionally disables GPU graph capture/replay and changes timing.
+- `GGML_QSA_MASK_AUDIT_DIR=<empty-external-directory>`: save raw contiguous four-row F16 masks; use separate directories for dense and sparse runs.
+- `GGML_QSA_MASK_DUMP_LIMIT=256`: newly added optional upper bound of 1–256 raw groups **per backend/device**; without it, the prior first-sample behavior remains. Multi-sample files are keyed by backend/device/invocation/stream/KV. An exhausted limit is logged. The final tensor F16 values are saved as little-endian binary16, row-major `[4,KV]`. Keep raw files and model traces outside Git.
+- `python3 docs/LLAMA-PERF/tools/test_compare_qsa_mask_dumps.py`: host-only standard-library regression tests (not yet run by Chat AI after repository commit).
+- `python3 docs/LLAMA-PERF/tools/compare_qsa_mask_dumps.py <dense.log> <sparse.log> > mask-diff.json`: align mask audit rows by backend/device and per-device order, validate logged counts against raw F16 data, and report the first changed position per query/union and the first differing finite mask values. Compare dense-vs-dense first to establish run-to-run stability. The tool **does not validate logits or GDN state**. Ensure trace step/sequence alignment separately: per-device order is not a global causal clock.
+
+This instrumentation is **diagnostic only**. It is disabled when the environment flags are unset; it is neither an inference-speed test nor a GPU graph replay correctness check. See Handoff 0015 for next validation gates.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
