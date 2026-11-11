@@ -1,5 +1,8 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
+#include "fattn-gqa-tune.h"
+
+#include <cstdlib>
 
 // nbatch_fa == number of KQ rows to process per iteration
 // nbatch_K == number of K columns to load in parallel for KQ calculation
@@ -1254,6 +1257,15 @@ static void launch_fattn_tile_switch_ncols2(ggml_backend_cuda_context & ctx, ggm
     const int gqa_limit = nvidia && gqa_ratio <= 4 && DV <= 256 ? 16 : INT_MAX;
     const bool use_gqa_opt = mask && max_bias == 0.0f && Q->ne[1] <= gqa_limit && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
+    // HIP-only experimental A/B: select another existing tiled GQA layout
+    // for 256x256 attention. Default (unset) retains the original dispatch.
+#ifdef GGML_USE_HIP
+    static const char * const max_gqa_env = std::getenv("GGML_HIP_FATTN_TILE_MAX_GQA");
+    const int max_gqa_columns = ggml_cuda_fattn_tune::max_gqa_columns(DKQ, DV, true, max_gqa_env);
+#else
+    const int max_gqa_columns = INT_MAX;
+#endif
+
     if constexpr (DKQ == 320) {
         // This branch is only used for Mistral Small 4 which has a GQA ratio of 32.
         // On AMD, simply use that GQA ratio with 32 columns / block since we always have enough SRAM.
@@ -1298,12 +1310,12 @@ static void launch_fattn_tile_switch_ncols2(ggml_backend_cuda_context & ctx, ggm
     }
 
     if constexpr (DKQ <= 512 && DKQ != 320 && DKQ != 192) {
-        if (use_gqa_opt && gqa_ratio % 8 == 0) {
+        if (use_gqa_opt && gqa_ratio % 8 == 0 && max_gqa_columns >= 8) {
             launch_fattn_tile_switch_ncols1<DKQ, DV, 8, use_logit_softcap>(ctx, dst);
             return;
         }
 
-        if (use_gqa_opt && gqa_ratio % 4 == 0) {
+        if (use_gqa_opt && gqa_ratio % 4 == 0 && max_gqa_columns >= 4) {
             launch_fattn_tile_switch_ncols1<DKQ, DV, 4, use_logit_softcap>(ctx, dst);
             return;
         }

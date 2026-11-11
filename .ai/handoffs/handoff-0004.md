@@ -1,0 +1,42 @@
+# Handoff 0004 — controlled flash-attention GQA tile A/B
+
+## Objective
+
+Establish whether the long-context MTP slowdown identified in Report 0003 is sensitive to **HIP flash-attention tile grouping**, and identify the remaining critical-path dependencies. Test a specific opt-in source variant, not a blanket change to attention arithmetic or synchronization. Promote no optimization unless real end-to-end measurements and output checks support it.
+
+## Context and Chat AI implementation
+
+- Exclusive repository: `civcode/llama.cpp-perf`, branch `docs/llama-perf`. Read `.ai/WORKFLOW.md`, `.ai/reports/report-0003.md`, the prior reports, and this handoff at the exact transfer commit. Chat AI now transfers exclusive write ownership after pushing this handoff.
+- Report 0003 matched uncached 512-token MTP requests: **32,809 prompt tokens** generated 512 tokens at 58.64 t/s with 204 verification steps (42.72 ms/step); **98,275 prompt tokens** generated 512 at 39.97 t/s with 203 verification steps (62.98 ms/step). Accepted/drafted counts were 306/611 and 307/609. The output/acceptance remained close while time per verification step rose ~20.26 ms.
+- AMD kernel sums per observed MTP-sized logits readback: flash attention increased **3.589 → 10.394 ms**, delta **+6.805 ms**. QSA lightning indexer increased 0.219 → 0.498 ms; quantized matmul was ~11.3 ms and did not increase. Kernel time can overlap across GPUs and is not directly subtractable from elapsed wall time. Nsight CUDA GPU timeline unavailable under existing permissions. Profiling perturbed throughput and windows are approximate; no per-step phase markers or causal A/B yet.
+- The reported leading kernel is `flash_attn_tile<256, 256, 4, 4, false>` on both R9700 GPUs. In `ggml/src/ggml-cuda/fattn-tile.cuh`, `launch_fattn_tile_switch_ncols2` dispatches existing tiled GQA layouts based on grouped-query ratio; the HIP configuration table has other valid 256×256 layouts.
+- **Chat AI has implemented a disabled-by-default A/B switch:** `GGML_HIP_FATTN_TILE_MAX_GQA=2` limits the GQA grouping to 2 in **HIP 256×256 flash-attention tiles only**, allowing the kernel dispatch to select an existing `ncols2=2` instantiation instead of grouping 4 or 8. Unset or other values retain the original dispatch. NVIDIA, other DKQ/DV shapes, and all synchronization semantics remain unchanged. Source: `ggml/src/ggml-cuda/fattn-tile.cuh` and `fattn-gqa-tune.h`. Standalone test: `docs/LLAMA-PERF/tools/test_fattn_gqa_tune.cpp`, tested locally on a host C++17 compiler. **No CUDA/HIP build or runtime A/B has been verified by Chat AI.**
+- This option is an **experiment**, not an asserted optimization. Different groupings can alter rounding, sampling and MTP acceptance. Runtime flag is read once per instantiated host dispatch; restart the process for each A/B arm.
+
+## Tasks — one coherent hardware investigation
+
+1. **Sync, compile, and verify switch semantics.** Bring `docs/llama-perf` to the exact handoff commit. Run the targeted standalone helper test. Compile mixed CUDA/HIP `llama-server` and `llama-bench` under separate `build-perf/` using **28 parallel jobs** (`cmake --build build-perf -j 28`). Fix portability or compile problems autonomously, without modifying the reference `build-mixed/`. Check no errors/NaNs in a short MTP smoke request with the flag unset and set to `2`.
+2. **Verify the experiment actually changes a GPU kernel.** With identical target model, draft model and GPU placement, obtain HIP kernel names for at least a short decode phase with the flag unset and with `GGML_HIP_FATTN_TILE_MAX_GQA=2`. Confirm which R9700 kernel template changes from the observed baseline `flash_attn_tile<256,256,4,4,false>` to a different GQA grouping. If the toggle has no effect, diagnose dispatch/shape and correct *only within the defined 256×256 HIP experiment*. Do not treat a no-op comparison as evidence. Check relevant graph-cache/kernel caching across process restarts.
+3. **Run matched MTP end-to-end A/B at 32K and 98K.** Reuse saved request inputs at `/home/chris/workspace/llama-perf-results/20261111-143704/server/` and server configuration recorded in Report 0003. Target `CUDA0,ROCm0,ROCm1`, draft `CUDA0`; requested split `4,7,7`, 196608 context, F16 KV, `--fit-target 768`, FA on, `--parallel 1`, MTP draft n-max 3, seed 42 and original sampler. Use **the same uncached prompt**, fixed token cap (512 when practical) and clean process per variant. Record t/s, actual prompt tokens, verification steps, accepted/drafted tokens, output finish reason, effective placement and per-step wall time. Prefer ~3 runs per arm per depth if resource cost is acceptable, alternating order where practical; at minimum establish repeatability adequate to distinguish noise. Ensure normal, finite inference behavior and no corruption of recurrent state/GDN. Compare short smoke results too.
+4. **Correlate with GPU activity, not profiler-induced throughput alone.** Capture narrowly bounded HIP per-kernel traces for 32K and 98K in both arms if practical. Prefer decoding-phase markers, actual MTP verification counters/timing (or explicit limits), and per-Radeon busy union to compare flash-attention kernel work and host waiting. Use existing `rocpd_operator_compare.py` as a starting point but heed the Report 0003 finding: MTP copies are commonly **3,973,120 bytes** (four vocab logits), not the 993,280-byte target-only pattern; auto-window is approximate and observed copy count is not necessarily verification count. If full tracing is too costly, use a small profiling sample and strong unprofiled A/B. Do not change system security settings.
+5. **Interpret and optionally refine.** If `ncols2=2` improves 98K throughput without unacceptable 32K regression, finite-logit/outputs or MTP acceptance changes, explain which part is causal and whether the change can become an architecture-specific, disabled-by-default or safely default option. If it regresses or has no impact, retain the opt-in experiment as diagnostic or remove it if noisy, and identify the next most promising attention bottleneck (sequence tile work distribution, head dispatch, KV lengths/masks, occupancy, or cross-device dependencies). A regression is a useful causal result, not a failed handoff. Do not introduce speculative kernel arithmetic changes.
+6. **Report.** Write `.ai/reports/report-0004.md` with exact command/config, source revision, build test results, observed kernel variants, matched A/B per-depth throughput and per-verification-step metrics, output sanity, profiler caveats, clear go/no-go decision and one next source target. Keep raw models, requests and huge profile DBs **outside Git** under a new local results directory. Commit and push relevant corrections and report to `docs/llama-perf` and return standard completion pointer.
+
+## Constraints
+
+- Work only on the fork and existing branch. Do not create pull requests, merge branches, run or dispatch GitHub Actions, add automatic workflow triggers, or force-push.
+- No asynchronous/deleted scheduler waits; this experiment changes only a flash-attention tile dispatch option on HIP. Keep production default behavior unchanged unless evidence warrants a later explicit decision.
+- Preserve existing original llama.cpp checkout, GGUF model files, and baseline `build-mixed`. Keep output results and profiler databases outside Git; reports include concise summaries and paths.
+- Reuse matched MTP prompts and confirm actual GPU layer/tensor placement when comparing. The trace lacks a full NVIDIA GPU timeline; state any unresolved causal ambiguity. Ensure source semantics and output checks are truthful.
+
+## Completion criteria
+
+- Mixed CUDA/HIP build with `-j 28` and standalone C++ test pass, or a genuine environment blocker documented.
+- Verified baseline and experimental flash-attention kernel variant on ROCm, or an explained no-op plus corrective diagnosis.
+- Matched, preferably repeated 32K/98K MTP A/B with normalized verification steps, acceptance, output validity and clearly described noise/trace overhead.
+- Evidence-based recommendation whether to retain/change/reject GQA grouping and the next concrete target if no win.
+- `.ai/reports/report-0004.md` and useful source fixes committed/pushed to the agreed branch, followed by short completion message.
+
+## Reporting
+
+`Iteration: 0004 | Status: Completed/Partial/Blocked | Branch: docs/llama-perf | Commit: <pushed-sha> | Report: .ai/reports/report-0004.md | Summary: <1-2 sentences>`
