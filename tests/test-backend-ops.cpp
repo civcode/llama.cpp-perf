@@ -9120,6 +9120,66 @@ struct test_flash_attn_ext : public test_case {
     }
 };
 
+// Deterministic long-KV attention cases for comparing HIP tile variants across
+// separate test processes. These use the normal CPU-reference tolerance and
+// leave the default test suite unchanged unless GGML_TEST_LONG_FA is enabled.
+struct test_flash_attn_ext_long_kv : public test_flash_attn_ext {
+    using test_flash_attn_ext::test_flash_attn_ext;
+
+    std::string vars() override {
+        return test_flash_attn_ext::vars() + ",long_kv_deterministic=1";
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_empty(t)) {
+                continue;
+            }
+
+            const size_t n = ggml_nelements(t);
+            uint32_t seed = 2166136261u;
+            for (const char * c = t->name; *c; ++c) {
+                seed = (seed ^ static_cast<uint8_t>(*c)) * 16777619u;
+            }
+
+            if (strcmp(t->name, "m") == 0) {
+                GGML_ASSERT(t->type == GGML_TYPE_F16);
+                const int64_t n_kv = t->ne[0];
+                std::vector<ggml_fp16_t> vals(n);
+                for (size_t i = 0; i < n; ++i) {
+                    const int64_t row = i / n_kv;
+                    const int64_t pos = i % n_kv;
+                    const bool valid = pos + (row % 17) < n_kv && (pos + row * 7) % 31 != 0;
+                    const float value = valid ? -0.015625f * static_cast<float>((pos + row) % 7) : -INFINITY;
+                    vals[i] = ggml_fp32_to_fp16(value);
+                }
+                ggml_backend_tensor_set(t, vals.data(), 0, vals.size() * sizeof(vals[0]));
+                continue;
+            }
+
+            if (t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16) {
+                continue;
+            }
+
+            std::vector<float> values(n);
+            for (size_t i = 0; i < n; ++i) {
+                uint32_t x = static_cast<uint32_t>(i) * 2654435761u ^ seed;
+                x ^= x >> 16;
+                x *= 0x7feb352du;
+                x ^= x >> 15;
+                values[i] = static_cast<float>(static_cast<int>(x & 1023u) - 512) * (0.125f / 512.0f);
+            }
+            if (t->type == GGML_TYPE_F32) {
+                ggml_backend_tensor_set(t, values.data(), 0, values.size() * sizeof(values[0]));
+            } else {
+                std::vector<ggml_fp16_t> half_values(n);
+                ggml_fp32_to_fp16_row(values.data(), half_values.data(), n);
+                ggml_backend_tensor_set(t, half_values.data(), 0, half_values.size() * sizeof(half_values[0]));
+            }
+        }
+    }
+};
+
 // large Q values, so the online softmax has to rescale the partial results
 struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
     static constexpr int q_range = 20;
@@ -12861,6 +12921,22 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_pad_ext(GGML_TYPE_F32, {11, 22, 33, 44}, 1, 2, 3, 4, 5, 6, 7, 8, tfrm, circular));
             test_cases.emplace_back(new test_pad_ext(GGML_TYPE_F32, {11, 22, 33, 44}, 0, 2, 0, 4, 0, 6, 0, 8, tfrm, circular));
         }
+    }
+
+    // Opt-in deterministic 256x256 decode-shaped long-KV CPU reference checks.
+    // nb=3, nh=2, gqa=4 exercises flash_attn_tile<256,256,4,4,false>
+    // on the baseline HIP path and <256,256,4,2,false> with max GQA=2.
+    // Keep these out of the default test suite: the CPU reference at 32K
+    // requires substantial memory and execution time.
+    if (const char * value = std::getenv("GGML_TEST_LONG_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {4096, 16384, 32768}) {
+            test_cases.emplace_back(new test_flash_attn_ext_long_kv(
+                256, 256, 2, {4, 1}, kv, 3, true, false, 0.0f, 0.0f,
+                GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+        test_cases.emplace_back(new test_flash_attn_ext_long_kv(
+            256, 256, 2, {8, 1}, 8192, 3, true, false, 0.0f, 0.0f,
+            GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     }
 
     // prefill-shaped cases with long KV (nb >= 32, kv >= 1024): covers the

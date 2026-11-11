@@ -2,7 +2,7 @@
 
 Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed CUDA + HIP inference using [civcode/llama.cpp-perf](https://github.com/civcode/llama.cpp-perf).
 
-**Status (2026-11-11):** two target-only llama-bench baselines, MTP-enabled server measurements at 8K/32K/98K context, and an initial ROCprofiler HIP trace have been captured. Handoff 0001 identified benchmark-driven HIP waits; handoff 0002 found no safe tensor-upload optimization; handoff 0003's matched 32K/98K MTP traces identified flash-attention as the leading incremental GPU-time hypothesis, but not a proven causal bottleneck. Handoff 0004 tests an opt-in HIP flash-attention GQA tile-grouping A/B. No speedup or numerical-correctness claim has been established.
+**Status (2026-11-11):** two target-only llama-bench baselines, MTP-enabled server measurements at 8K/32K/98K context, and an initial ROCprofiler HIP trace have been captured. Handoff 0001 identified benchmark-driven HIP waits; handoff 0002 found no safe tensor-upload optimization; handoff 0003's matched 32K/98K MTP traces identified flash-attention as the leading incremental GPU-time hypothesis, but not a proven causal bottleneck. Handoff 0004 verified that the alternate HIP 256x256 GQA tile grouping changes kernel selection and MTP acceptance, but does not improve time per verification step; the apparent throughput gain is confounded by different generated tokens. Handoff 0005 adds deterministic long-KV CPU-reference coverage and a target-only fixed-work A/B. No validated kernel speedup or long-context numerical-equivalence claim has been established.
 
 ## Documents
 
@@ -18,6 +18,8 @@ Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed C
 - [Report 0003](../../.ai/reports/report-0003.md) - matched 32K/98K MTP throughput and phase-selected HIP trace identifying flash-attention as a hypothesis.
 - [Collaborative handoff 0004](../../.ai/handoffs/handoff-0004.md) - test the reversible HIP 256x256 GQA-grouping A/B with end-to-end MTP and GPU evidence.
 - [GQA tile experiment helper](../../ggml/src/ggml-cuda/fattn-gqa-tune.h) - opt-in `GGML_HIP_FATTN_TILE_MAX_GQA=2`; disabled by default.
+- [Report 0004](../../.ai/reports/report-0004.md) - experimental GQA tile changes MTP acceptance and output, without faster time per verification.
+- [Collaborative handoff 0005](../../.ai/handoffs/handoff-0005.md) - long-KV deterministic validation and fixed-work target-only attention A/B.
 - [Benchmark results](BENCHMARK-RESULTS.md) - measured throughput, context-depth scaling, limitations, and initial hypotheses.
 - [Original auto-fit benchmark](raw/results-20261111-140511.md) - unmodified uploaded Markdown table (24 tests).
 - [Original fixed-split benchmark](raw/results-fixed-split-20261111-142812.md) - unmodified uploaded Markdown table (6 tests).
@@ -49,6 +51,6 @@ At 163,840 tokens of prefilled depth, the auto-fit target-only benchmark reports
 
 This is evidence of context-length sensitivity, **not** evidence that any one kernel (QSA, experts, transfers, or scheduling) is the cause.
 
-**Next checkpoint:** complete [handoff 0004](../../.ai/handoffs/handoff-0004.md), a controlled HIP flash-attention tile-layout experiment before changing any production default. Use **28 build jobs** locally; do not dispatch GitHub Actions.
+**Next checkpoint:** complete [handoff 0005](../../.ai/handoffs/handoff-0005.md), testing 256x256 attention against the CPU reference at long KV and comparing fixed-work target-only decode with the HIP GQA option enabled/disabled. Use **28 build jobs** locally; do not dispatch GitHub Actions.
 
 The original `/home/chris/workspace/llama.cpp` checkout is not part of this experiment and should remain unchanged.
