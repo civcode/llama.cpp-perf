@@ -6,6 +6,7 @@
 #include "fattn.cuh"
 #include "fattn-wmma-q4-tune.h"
 #include "fattn-sparse-q4-tune.h"
+#include "fattn-sparse-q4-gqa12-tune.h"
 
 #include <cstdlib>
 #include <atomic>
@@ -180,12 +181,21 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
                 }
             }
         }
+        // Keep the proven GQA4 guard intact. The GQA12 prototype has a
+        // separate opt-in flag and reuses the same 4x4 sparse specialization
+        // across three GQA-head tiles; GPU correctness is still to be tested.
         sparse_q4 = ggml_cuda_fattn_sparse_q4::should_use(
             GGML_CUDA_CC_IS_RDNA(cc), amd_wmma_available(cc), Q->ne[0], V->ne[0], K->ne[0],
             Q->ne[1], Q->ne[3], Q->ne[2]/K->ne[2], gqa_opt,
             K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
             mask->type == GGML_TYPE_F16, K->ne[1], n_kv_max,
-            std::getenv("GGML_HIP_QSA_SPARSE_Q4"));
+            std::getenv("GGML_HIP_QSA_SPARSE_Q4")) ||
+            ggml_cuda_fattn_sparse_q4_gqa12::should_use(
+            GGML_CUDA_CC_IS_RDNA(cc), amd_wmma_available(cc), Q->ne[0], V->ne[0], K->ne[0],
+            Q->ne[1], Q->ne[3], Q->ne[2]/K->ne[2], gqa_opt,
+            K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
+            mask->type == GGML_TYPE_F16, K->ne[1], n_kv_max,
+            std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12"));
     }
 #endif
     if (ncols1 == 4 && ncols2 == 4 && !sparse_q4) {
@@ -724,13 +734,21 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // Opt-in sparse gather reuses the existing 256x256 WMMA kernel.
     // Only the QSA n_kv_max shape can activate it.
     const int32_t n_kv_max_sparse = ggml_get_op_params_i32(dst, 4);
-    if (ggml_cuda_fattn_sparse_q4::should_use(
+    const bool sparse_q4_gqa4 = ggml_cuda_fattn_sparse_q4::should_use(
             GGML_CUDA_CC_IS_RDNA(cc), amd_wmma_available(cc),
             Q->ne[0], V->ne[0], K->ne[0], Q->ne[1], Q->ne[3], gqa_ratio,
             gqa_opt_applies,
             K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
             mask != nullptr && mask->type == GGML_TYPE_F16, K->ne[1],
-            n_kv_max_sparse, std::getenv("GGML_HIP_QSA_SPARSE_Q4"))) {
+            n_kv_max_sparse, std::getenv("GGML_HIP_QSA_SPARSE_Q4"));
+    const bool sparse_q4_gqa12 = ggml_cuda_fattn_sparse_q4_gqa12::should_use(
+            GGML_CUDA_CC_IS_RDNA(cc), amd_wmma_available(cc),
+            Q->ne[0], V->ne[0], K->ne[0], Q->ne[1], Q->ne[3], gqa_ratio,
+            gqa_opt_applies,
+            K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
+            mask != nullptr && mask->type == GGML_TYPE_F16, K->ne[1],
+            n_kv_max_sparse, std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12"));
+    if (sparse_q4_gqa4 || sparse_q4_gqa12) {
         return BEST_FATTN_KERNEL_MMA_F16;
     }
 #endif
