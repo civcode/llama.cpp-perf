@@ -2,7 +2,7 @@
 
 Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed CUDA + HIP inference using [civcode/llama.cpp-perf](https://github.com/civcode/llama.cpp-perf).
 
-**Status (2026-11-11):** two target-only llama-bench baselines, MTP-enabled server measurements at 8K/32K/98K context, and an initial ROCprofiler HIP trace have been captured. Root-cause attribution and optimization validation are pending; no speedup or numerical-correctness claim has yet been established.
+**Status (2026-11-11):** two target-only llama-bench baselines, MTP-enabled server measurements at 8K/32K/98K context, and an initial ROCprofiler HIP trace have been captured. Handoff 0001 attributed most short-trace waiting to explicit benchmark synchronization; upload-path optimization remains unproven. An opt-in upload profiler is prepared for handoff 0002, pending GPU-build verification. No speedup or numerical-correctness claim has been established.
 
 ## Documents
 
@@ -10,6 +10,8 @@ Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed C
 - [MTP and HIP trace measurements (2026-11-11)](MEASUREMENTS-20261111.md) - collected server measurements, short-trace findings, and current uncertainty.
 - [ROCPD synchronization analyzer](tools/rocpd_sync_analysis.py) - read-only per-thread HIP sync and GPU activity analysis; real-device validation assigned in handoff 0001.
 - [Collaborative handoff 0001](../../.ai/handoffs/handoff-0001.md) - hardware-dependent synchronization root-cause investigation.
+- [Report 0001](../../.ai/reports/report-0001.md) - root-cause diagnosis, source call stacks and 32K comparison.
+- [Collaborative handoff 0002](../../.ai/handoffs/handoff-0002.md) - validate the opt-in upload profiler and determine if safe transfer batching is worthwhile.
 - [Benchmark results](BENCHMARK-RESULTS.md) - measured throughput, context-depth scaling, limitations, and initial hypotheses.
 - [Original auto-fit benchmark](raw/results-20261111-140511.md) - unmodified uploaded Markdown table (24 tests).
 - [Original fixed-split benchmark](raw/results-fixed-split-20261111-142812.md) - unmodified uploaded Markdown table (6 tests).
@@ -41,6 +43,6 @@ At 163,840 tokens of prefilled depth, the auto-fit target-only benchmark reports
 
 This is evidence of context-length sensitivity, **not** evidence that any one kernel (QSA, experts, transfers, or scheduling) is the cause.
 
-**Next checkpoint:** execute [handoff 0001](../../.ai/handoffs/handoff-0001.md) to attribute the 3,981 HIP stream synchronizations and quantify any removable serialization. Existing measurements are documented in [MEASUREMENTS-20261111.md](MEASUREMENTS-20261111.md). Run tests locally; do not dispatch GitHub Actions.
+**Next checkpoint:** complete [handoff 0002](../../.ai/handoffs/handoff-0002.md), tracing which tensors are uploaded synchronously and quantifying safe optimization opportunities. Run all builds and measurements locally; do not dispatch GitHub Actions.
 
 The original `/home/chris/workspace/llama.cpp` checkout is not part of this experiment and should remain unchanged.

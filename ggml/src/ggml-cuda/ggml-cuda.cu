@@ -4,6 +4,7 @@
 
 #include "ggml-cuda/allreduce.cuh"
 #include "ggml-cuda/common.cuh"
+#include "ggml-cuda/upload-profile.h"
 #include "ggml-cuda/graph.cuh"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
@@ -964,9 +965,23 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
+    const bool profile_upload = ggml_cuda_upload_profile::enabled();
+    std::chrono::steady_clock::time_point upload_start;
+    if (profile_upload) {
+        upload_start = std::chrono::steady_clock::now();
+    }
+
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    std::chrono::steady_clock::time_point sync_start;
+    if (profile_upload) {
+        sync_start = std::chrono::steady_clock::now();
+    }
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+
+    if (profile_upload) {
+        ggml_cuda_upload_profile::record(GGML_CUDA_NAME " set_tensor", ctx->device, tensor->name, size, upload_start, sync_start);
+    }
 }
 
 static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
@@ -981,10 +996,25 @@ static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer,
         size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
+    const bool profile_upload = ggml_cuda_upload_profile::enabled();
+    std::chrono::steady_clock::time_point upload_start;
+    if (profile_upload) {
+        upload_start = std::chrono::steady_clock::now();
+    }
+
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemcpy2DAsync(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    std::chrono::steady_clock::time_point sync_start;
+    if (profile_upload) {
+        sync_start = std::chrono::steady_clock::now();
+    }
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+
+    if (profile_upload) {
+        ggml_cuda_upload_profile::record(GGML_CUDA_NAME " set_tensor_2d", ctx->device,
+                tensor->name, size*n_copies, upload_start, sync_start);
+    }
 }
 
 static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer, const struct ggml_tensor * tensor, void * data,
@@ -1000,7 +1030,14 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
 static void ggml_backend_cuda_buffer_set_tensor_n(ggml_backend_buffer_t buffer, struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
+    const bool profile_upload = ggml_cuda_upload_profile::enabled();
+    std::chrono::steady_clock::time_point upload_start;
+    if (profile_upload) {
+        upload_start = std::chrono::steady_clock::now();
+    }
+
     ggml_cuda_set_device(ctx->device);
+    size_t batch_bytes = 0;
 
     for (size_t i = 0; i < n_tensors; i++) {
         if (sizes[i] == 0) {
@@ -1012,9 +1049,21 @@ static void ggml_backend_cuda_buffer_set_tensor_n(ggml_backend_buffer_t buffer, 
             sizes[i],
             cudaMemcpyHostToDevice,
             cudaStreamPerThread));
+        if (profile_upload) {
+            batch_bytes += sizes[i];
+        }
     }
 
+    std::chrono::steady_clock::time_point sync_start;
+    if (profile_upload) {
+        sync_start = std::chrono::steady_clock::now();
+    }
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+
+    if (profile_upload) {
+        ggml_cuda_upload_profile::record(GGML_CUDA_NAME " set_tensor_n", ctx->device,
+                "<batch>", batch_bytes, upload_start, sync_start);
+    }
 }
 
 static void ggml_backend_cuda_buffer_get_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * tensors, void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
