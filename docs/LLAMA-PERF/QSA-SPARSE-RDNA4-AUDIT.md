@@ -63,6 +63,22 @@ For the next bounded investigation, Chat AI has added an opt-in, **post-kernel F
 
 These graph-disabled, synchronized output dumps are **diagnostics, not performance measurements**. The comparator checks tensor name, output shape, device order, mask-bound metadata and finiteness, but cannot itself prove identical Q/K/V inputs, aligned token IDs, or equivalent GDN rollback state. Infer causality only after aligning true model steps and comparing surrounding inputs. Full-model performance A/B and production promotion remain blocked; see Handoff 0016.
 
+## Iteration 0016 result and FP64 reference replay
+
+[Report 0016](../../.ai/reports/report-0016.md) established that at the first diverging attention output on **HIP0 layer 11**, in the final four-token prompt batch before any MTP drafts, the dense and experimental GQA12 sparse paths consumed **byte-identical** Q, K, V tensor spans and the same actual F16 mask (3537 selected KV union). All 24,576 layer-11 F32 output values differed: maximum absolute error 0.00535035, dense-energy NMSE 8.97579e-7. The subsequent layer-15 QSA top-k/selection differed. Dense A/B repeated mask and output bytes exactly. **These data isolate a kernel-path numerical difference but do not establish a correct reference, acceptable numerical tolerance, causal top-k sensitivity or recurrent-state/logit equivalence.**
+
+Chat AI added a **disabled-by-default** exact-capture metadata line `QSA_INPUT_META` to `ggml/src/ggml-cuda/fattn.cu`, emitted alongside the existing first HIP0 layer-11 Q/K/V capture. It records the actual `scale`, `max_bias`, `softcap`, and whether attention sinks are present, plus backend/device/layer/invocation ID. The corresponding new analyzer `docs/LLAMA-PERF/tools/replay_qsa_captured_attention.py` uses NumPy (the only external Python dependency) to:
+
+- read raw Q(F32) and strided K/V(F16) spans using the recorded GGML shapes and **byte strides**, respecting noncontiguous views/padding;
+- require bit-identical dense/sparse Q/K/V captures and identical F16 masks; verify mask finite counts/union against the logged live audit and verify attention-scale equality;
+- reject unsupported ALiBi, logit-softcap and sink variants rather than silently assuming a normal softmax;
+- compute an FP64 `softmax((Q K^T)*scale + mask) V` reference using only selected KV rows and the actual 24-query/2-KV-head GQA mapping;
+- report dense vs FP64, sparse vs FP64 and sparse vs dense errors, overall and worst per head (max absolute and normalized squared error).
+
+Use **fresh** graph-disabled dense and sparse runs, each with `GGML_QSA_MASK_AUDIT=1000`, `GGML_QSA_MASK_AUDIT_DIR`, `GGML_QSA_MASK_DUMP_LIMIT=256`, `GGML_QSA_INPUT_DIR`, `GGML_QSA_ATTN_OUT_DIR` and `GGML_QSA_ATTN_OUT_LIMIT=256` pointing to distinct external directories; only sparse enables `GGML_HIP_QSA_SPARSE_Q4_GQA12=1`. Run `python3 docs/LLAMA-PERF/tools/test_replay_qsa_captured_attention.py` and `python3 docs/LLAMA-PERF/tools/replay_qsa_captured_attention.py dense.log sparse.log`. The script/test are new and **not yet tested on the agent host**. Chat AI exercised only a small independent synthetic NumPy attention calculation locally; full source build and real captured replay are next-agent work.
+
+The FP64 result is a high-precision mathematical **reference**, not proof of bitwise GPU behavior: even a closer match does not establish acceptable model-logit or GDN-state correctness, which must be measured separately. Do not promote experimental sparse attention or run long model performance A/B until those gates pass. See Handoff 0017.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
