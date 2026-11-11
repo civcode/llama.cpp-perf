@@ -999,9 +999,12 @@ static void ggml_cuda_qsa_dump_attn_output(
         ggml_backend_cuda_context & ctx, const ggml_tensor * dst, long audit_id) {
     const char * dir = std::getenv("GGML_QSA_ATTN_OUT_DIR");
     if (!dir) return;
-    if (audit_id < 0 || !std::getenv("GGML_QSA_MASK_AUDIT")) {
+    if (!std::getenv("GGML_QSA_MASK_AUDIT")) {
         GGML_ABORT("GGML_QSA_ATTN_OUT_DIR requires GGML_QSA_MASK_AUDIT");
     }
+    // Other attention operators are not QSA. Do not abort when the model
+    // contains a mixture of regular and QSA attention layers.
+    if (audit_id < 0) return;
     const char * limit_option = std::getenv("GGML_QSA_ATTN_OUT_LIMIT");
     long limit = 1;
     if (limit_option) {
