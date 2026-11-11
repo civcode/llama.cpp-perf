@@ -96,14 +96,21 @@ def floats(row: dict) -> array:
 
 
 def compare_pair(dense: dict, sparse: dict, abs_tol: float, rel_tol: float) -> dict:
-    for field in ("backend", "device", "layer", "shape", "masks"):
+    for field in ("backend", "device", "layer", "shape"):
         if dense[field] != sparse[field]:
             raise ValueError(
                 f"unaligned outputs on {dense['backend']}{dense['device']} "
                 f"at ordinal={dense['ordinal']}: {field}: "
-                f"{dense[field] if field != 'masks' else 'mask meta'} != "
-                f"{sparse[field] if field != 'masks' else 'mask meta'}"
+                f"{dense[field]} != {sparse[field]}"
             )
+    # The selected indices and union counts may differ in *later* QSA layers.
+    # Compare only identity/shape/bound here; preserve both unions in output.
+    if len(dense["masks"]) != len(sparse["masks"]):
+        raise ValueError("QSA mask stream count differs")
+    for mask_a, mask_b in zip(dense["masks"], sparse["masks"]):
+        for field in ("kv", "bound", "qheads", "kvheads", "stream"):
+            if mask_a[field] != mask_b[field]:
+                raise ValueError(f"unaligned mask {field} at ordinal {dense['ordinal']}")
     a = floats(dense)
     b = floats(sparse)
     dim, nheads, nq, nstreams = dense["shape"]
@@ -147,7 +154,8 @@ def compare_pair(dense: dict, sparse: dict, abs_tol: float, rel_tol: float) -> d
         "backend": dense["backend"], "device": dense["device"],
         "ordinal": dense["ordinal"], "dense_id": dense["id"], "sparse_id": sparse["id"],
         "layer": dense["layer"], "shape": dense["shape"],
-        "mask_union_per_stream": [m["union"] for m in dense["masks"]],
+        "dense_mask_union_per_stream": [m["union"] for m in dense["masks"]],
+        "sparse_mask_union_per_stream": [m["union"] for m in sparse["masks"]],
         "total_elements": len(a), "changed_elements": different,
         "binary_identical": a.tobytes() == b.tobytes(),
         "max_abs": max_abs, "max_rel": max_rel,
