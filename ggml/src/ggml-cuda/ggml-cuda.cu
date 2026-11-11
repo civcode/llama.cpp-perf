@@ -5346,7 +5346,11 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     // The experimental Q4 overflow check synchronizes the stream. Graph
     // capture/replay cannot safely perform that host-side check.
     const char * qsa_sparse = std::getenv("GGML_HIP_QSA_SPARSE_Q4");
-    if (qsa_sparse && strcmp(qsa_sparse, "1") == 0) {
+    const char * qsa_sparse_gqa12 = std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12");
+    if ((qsa_sparse && strcmp(qsa_sparse, "1") == 0) ||
+        (qsa_sparse_gqa12 && strcmp(qsa_sparse_gqa12, "1") == 0)) {
+        // The experimental count check synchronizes the stream before gather.
+        // Neither opt-in can safely run during HIP graph capture/replay.
         return false;
     }
 #endif
