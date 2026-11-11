@@ -2,11 +2,17 @@
 
 Last reviewed: 2026-11-11. This is an experiment on our fork, not an upstream change or a verified speedup.
 
+## Iteration 0013 safety and model update
+
+[Report 0013](../../.ai/reports/report-0013.md) records dense-path actual masks at both depths and an opt-in Q4 overflow check which aborts before gather on overflow. The check synchronizes the HIP stream and disables HIP graph capture while the sparse experiment is enabled; it is a safety prototype, not a performance-ready implementation. `GGML_QSA_MASK_AUDIT=<1..100000>` enables bounded, synchronous consumer-mask logging and disables GPU graph capture; see the report for coverage and limitations. Leave both variables unset in normal operation.
+
+The tested model's actual Q/KV head counts are 24/2, i.e. GQA12. The present experimental selector requires GQA4, so it cannot activate for that model. Do not infer a model speedup from the GQA4 microbenchmark, broaden its shape guards, or run sparse model inference without the remaining safety/numerical gates.
+
 ## Iteration 0012 hardware validation update
 
 [Report 0012](../../.ai/reports/report-0012.md) verified the mixed HIP/CUDA build, sparse dispatch and CPU-reference correctness on both R9700s. The opt-in synthetic Q=4/GQA4 whole-op test (including mask compaction) measured 98K medians of 342.54 -> 135.14 us on ROCm0 and 342.98 -> 132.04 us on ROCm1. ROCm0 had an unexplained 204.53 us sparse sample in its three-run range. These are **synthetic operator** timings, not model inference speedups.
 
-The **full-model safety gate remains blocked**: real 32K/98K QSA mask unions, MTP rollback/graph reuse and mixed sequence transitions have not been observed; the compactor can silently clip an over-capacity union. Do not run full-model sparse inference until actual bounds are checked and overflow cannot produce a silently truncated result. Production defaults remain unchanged. See the next handoff for the bounded audit and fail-closed verification milestone.
+At that point the **full-model safety gate remained blocked**: real QSA mask unions had not been observed and the compactor could silently clip an over-capacity union. See the iteration 0013 update above for subsequent work and remaining limitations. Production defaults remain unchanged.
 
 ## Why investigate sparse attention?
 

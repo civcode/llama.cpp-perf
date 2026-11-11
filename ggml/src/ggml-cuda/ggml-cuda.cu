@@ -5337,6 +5337,19 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 
 #ifdef USE_CUDA_GRAPH
 static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, const void * graph_key) {
+    // The opt-in consumer-mask audit reads synchronously on the host and must
+    // observe each invocation, not a captured/replayed graph.
+    if (std::getenv("GGML_QSA_MASK_AUDIT") != nullptr) {
+        return false;
+    }
+#ifdef GGML_USE_HIP
+    // The experimental Q4 overflow check synchronizes the stream. Graph
+    // capture/replay cannot safely perform that host-side check.
+    const char * qsa_sparse = std::getenv("GGML_HIP_QSA_SPARSE_Q4");
+    if (qsa_sparse && strcmp(qsa_sparse, "1") == 0) {
+        return false;
+    }
+#endif
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
     if (graph->instances.empty()) {
@@ -5364,10 +5377,10 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 #ifdef USE_CUDA_GRAPH
     graph_key = ggml_cuda_graph_get_key(cgraph);
 
-    ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
+    const bool graph_enabled = ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
 
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
-    if (graph->is_enabled()) {
+    if (graph_enabled) {
         // graph->uid is set only for a compatible graph (see ggml_cuda_graph_update_required), so a reused graph needs no new check
         const bool graph_reused     = cgraph->uid != 0 && cgraph->uid == graph->uid;
         const bool graph_compatible = graph_reused || ggml_cuda_graph_check_compability(cgraph);

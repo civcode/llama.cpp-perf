@@ -778,7 +778,7 @@ static __global__ void flash_attn_mask_to_KV_max(
 }
 
 void ggml_cuda_flash_attn_ext_compact_mask(
-        const ggml_tensor * mask, int32_t * indices, int32_t * counts, int32_t n_queries, int32_t ncols1, int32_t n_kv_max, cudaStream_t stream);
+        const ggml_tensor * mask, int32_t * indices, int32_t * counts, int32_t n_queries, int32_t ncols1, int32_t n_kv_max, cudaStream_t stream, bool report_overflow);
 
 template<int D, int ncols1, int ncols2> // D == head size
 __launch_bounds__(D, 1)
@@ -1167,7 +1167,34 @@ void launch_fattn(
         const size_t n_lists = size_t(ntiles_x) * mask->ne[3];
 
         KV_max.alloc(size_t(n_kv_max)*n_lists + n_lists);
-        ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, KV_max.ptr + size_t(n_kv_max)*n_lists, Q->ne[1], ncols1, n_kv_max, main_stream);
+        // Q4 is an opt-in HIP experiment. Read the true union sizes before the
+        // gather can consume the bounded index buffer; overflow is fatal, never
+        // silently clipped. This synchronization is intentionally experimental.
+#ifdef GGML_USE_HIP
+        const bool checked_q4 = ncols1 == 4;
+#else
+        const bool checked_q4 = false;
+#endif
+        int32_t * counts = KV_max.ptr + size_t(n_kv_max)*n_lists;
+        ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, counts, Q->ne[1], ncols1, n_kv_max, main_stream, checked_q4);
+        if (checked_q4) {
+#ifdef GGML_USE_HIP
+            hipStreamCaptureStatus capture_status;
+            CUDA_CHECK(hipStreamIsCapturing(main_stream, &capture_status));
+            if (capture_status != hipStreamCaptureStatusNone) {
+                GGML_ABORT("QSA sparse overflow check cannot run during stream capture");
+            }
+#endif
+            std::vector<int32_t> host_counts(n_lists);
+            CUDA_CHECK(cudaMemcpyAsync(host_counts.data(), counts, n_lists*sizeof(int32_t), cudaMemcpyDeviceToHost, main_stream));
+            CUDA_CHECK(cudaStreamSynchronize(main_stream));
+            for (size_t i = 0; i < n_lists; ++i) {
+                if (host_counts[i] > n_kv_max) {
+                    GGML_ABORT("QSA sparse index overflow: group %zu union %d exceeds capacity %d (KV=%lld)",
+                               i, host_counts[i], n_kv_max, (long long) K->ne[1]);
+                }
+            }
+        }
     }
 
     // Optional optimization where the mask is scanned to determine whether part of the calculation can be skipped.

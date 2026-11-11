@@ -8,6 +8,8 @@
 #include "fattn-sparse-q4-tune.h"
 
 #include <cstdlib>
+#include <atomic>
+#include <chrono>
 
 #if !defined(GGML_USE_MUSA)
 
@@ -16,7 +18,7 @@ template <int ncols1, bool oob>
 __launch_bounds__(256, 1)
 static __global__ void flash_attn_mask_to_sparse_indices(
         const half * mask_ptr, int32_t * indices_ptr, int32_t * counts_ptr, const int ne30, const int n_queries,
-        const int n_kv_max, const int64_t s31, const int64_t s33) {
+        const int n_kv_max, const int64_t s31, const int64_t s33, const bool report_overflow) {
     ggml_cuda_pdl_sync();
 
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
@@ -109,7 +111,7 @@ static __global__ void flash_attn_mask_to_sparse_indices(
         indices[i] = -1;
     }
     if (tid == 0) {
-        counts_ptr[int64_t(sequence)*gridDim.x + group] = count;
+        counts_ptr[int64_t(sequence)*gridDim.x + group] = report_overflow ? row_count : count;
     }
     __syncthreads();
 
@@ -119,9 +121,9 @@ static __global__ void flash_attn_mask_to_sparse_indices(
 #endif // !defined(GGML_USE_MUSA)
 
 void ggml_cuda_flash_attn_ext_compact_mask(
-        const ggml_tensor * mask, int32_t * indices, int32_t * counts, int32_t n_queries, int32_t ncols1, int32_t n_kv_max, cudaStream_t stream) {
+        const ggml_tensor * mask, int32_t * indices, int32_t * counts, int32_t n_queries, int32_t ncols1, int32_t n_kv_max, cudaStream_t stream, bool report_overflow) {
 #ifdef GGML_USE_MUSA
-    GGML_UNUSED_VARS(mask, indices, counts, n_queries, ncols1, n_kv_max, stream);
+    GGML_UNUSED_VARS(mask, indices, counts, n_queries, ncols1, n_kv_max, stream, report_overflow);
     GGML_ABORT("sparse flash attention is not supported on MUSA");
 #else
     const int64_t s31 = mask->nb[1] / sizeof(half);
@@ -137,7 +139,7 @@ void ggml_cuda_flash_attn_ext_compact_mask(
                                       (n_queries % 8 != 0 ? flash_attn_mask_to_sparse_indices<8, true> :
                                                                flash_attn_mask_to_sparse_indices<8, false>);
     ggml_cuda_kernel_launch(kernel, launch_params,
-        (const half *) mask->data, indices, counts, int(mask->ne[0]), n_queries, n_kv_max, s31, s33);
+        (const half *) mask->data, indices, counts, int(mask->ne[0]), n_queries, n_kv_max, s31, s33, report_overflow);
     CUDA_CHECK(cudaGetLastError());
 #endif // !defined(GGML_USE_MUSA)
 }
@@ -877,8 +879,84 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
     return f16_extra.end - (uintptr_t) dst->data;
 }
 
+// Opt-in, bounded, synchronous audit of the final attention-consumer mask.
+static void ggml_cuda_qsa_audit_mask(ggml_backend_cuda_context & ctx, const ggml_tensor * dst) {
+    const char * option = std::getenv("GGML_QSA_MASK_AUDIT");
+    if (!option) return;
+    const long limit = std::strtol(option, nullptr, 10);
+    if (limit <= 0 || limit > 100000) GGML_ABORT("GGML_QSA_MASK_AUDIT must be 1..100000");
+    const ggml_tensor * q = dst->src[0];
+    const ggml_tensor * mask = dst->src[3];
+    const int bound = ggml_get_op_params_i32(dst, 4);
+    if (!mask || bound <= 0 || q->ne[1] != 4) return;
+    static std::atomic<unsigned long> invocation{0};
+    const auto id = invocation.fetch_add(1);
+    if (id >= (unsigned long) limit) {
+        if (id == (unsigned long) limit) fprintf(stderr, "QSA_MASK_AUDIT limit reached; subsequent masks not inspected\n");
+        return;
+    }
+    if (mask->type != GGML_TYPE_F16 || mask->nb[0] != sizeof(ggml_fp16_t) || mask->ne[0] > 262144 ||
+        mask->ne[1] < 4 || mask->ne[2] != 1 || mask->ne[3] > 8 || mask->ne[3] != q->ne[3]) {
+        GGML_ABORT("QSA mask audit: unsupported mask layout");
+    }
+    const size_t kv = mask->ne[0];
+    const int64_t capacity = std::min<int64_t>(kv, int64_t(4)*bound);
+    std::vector<ggml_fp16_t> data(kv*4);
+    cudaStream_t stream = ctx.stream();
+    for (int64_t s = 0; s < mask->ne[3]; ++s) {
+        const char * src = (const char *) mask->data + s*mask->nb[3];
+        CUDA_CHECK(cudaMemcpy2DAsync(data.data(), kv*sizeof(ggml_fp16_t), src, mask->nb[1],
+                                     kv*sizeof(ggml_fp16_t), 4, cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        int counts[4] = {0, 0, 0, 0};
+        int nans = 0, posinf = 0, neginf = 0, total = 0;
+        for (size_t i = 0; i < kv; ++i) {
+            bool any = false;
+            for (int j = 0; j < 4; ++j) {
+                const uint16_t x = data[j*kv + i];
+                if ((x & 0x7c00u) != 0x7c00u) { ++counts[j]; any = true; }
+                else if (x & 0x03ffu) ++nans;
+                else if (x & 0x8000u) ++neginf;
+                else ++posinf;
+            }
+            total += any;
+        }
+#ifdef GGML_USE_HIP
+        const char * backend = "HIP";
+#else
+        const char * backend = "CUDA";
+#endif
+        // Optional single raw, contiguous [4, KV] F16 sample per backend/device.
+        // The caller supplies a dedicated output directory outside the repository.
+        const char * dump_dir = std::getenv("GGML_QSA_MASK_AUDIT_DIR");
+        static std::atomic<bool> dumped[32]{};
+        if (dump_dir && ctx.device >= 0 && ctx.device < 32 && !dumped[ctx.device].exchange(true)) {
+            char path[4096];
+            const int n = snprintf(path, sizeof(path), "%s/%s%d-mask.f16", dump_dir, backend, ctx.device);
+            if (n < 0 || size_t(n) >= sizeof(path)) GGML_ABORT("QSA mask audit dump path too long");
+            FILE * file = fopen(path, "wb");
+            if (!file) GGML_ABORT("QSA mask audit cannot open dump %s", path);
+            const size_t written = fwrite(data.data(), sizeof(data[0]), data.size(), file);
+            const int close_result = fclose(file);
+            if (written != data.size() || close_result != 0) GGML_ABORT("QSA mask audit cannot write dump %s", path);
+            fprintf(stderr, "QSA_MASK_DUMP backend=%s device=%d id=%lu stream=%lld kv=%zu path=%s\n",
+                    backend, ctx.device, id, (long long) s, kv, path);
+        }
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        const long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+        fprintf(stderr, "QSA_MASK_AUDIT mono_ns=%lld backend=%s id=%lu device=%d tensor=%s kv=%zu q=4 qheads=%lld kvheads=%lld stream=%lld bound=%d counts=%d,%d,%d,%d union=%d capacity=%lld nan=%d posinf=%d neginf=%d\n",
+                      ns, backend, id, ctx.device, dst->name, kv, (long long) q->ne[2], (long long) dst->src[1]->ne[2],
+                      (long long) s, bound, counts[0], counts[1], counts[2], counts[3], total,
+                      (long long) capacity, nans, posinf, neginf);
+        if (nans || posinf || total > capacity || counts[0] > bound || counts[1] > bound || counts[2] > bound || counts[3] > bound) {
+            GGML_ABORT("QSA mask audit detected an invalid or over-bound mask");
+        }
+    }
+}
+
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
+    ggml_cuda_qsa_audit_mask(ctx, dst);
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");

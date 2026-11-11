@@ -9218,6 +9218,32 @@ struct test_flash_attn_ext_qsa_sparse : public test_flash_attn_ext_long_kv {
     }
 };
 
+// Disjoint Q rows exercise the Q4 union capacity rather than just per-row counts.
+// The overflow fixture deliberately violates the declared per-query bound.
+struct test_flash_attn_ext_qsa_bound : public test_flash_attn_ext_long_kv {
+    const int delta;
+    explicit test_flash_attn_ext_qsa_bound(int d) :
+        test_flash_attn_ext_long_kv(256, 256, 2, {4, 1}, 32768, 4, true, false, 0.0f, 0.0f,
+                                   GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16,
+                                   {0, 1, 2, 3}, true, false, 2048), delta(d) {}
+    std::string vars() override {
+        return test_flash_attn_ext_long_kv::vars() + ",qsa_bound_delta=" + std::to_string(delta);
+    }
+    void initialize_tensors(ggml_context * ctx) override {
+        test_flash_attn_ext_long_kv::initialize_tensors(ctx);
+        ggml_tensor * mask = ggml_get_tensor(ctx, "m");
+        GGML_ASSERT(mask && mask->ne[0] == 32768 && mask->ne[1] == 4);
+        std::vector<ggml_fp16_t> vals(ggml_nelements(mask), ggml_fp32_to_fp16(-INFINITY));
+        for (int q = 0; q < 4; ++q) {
+            const int count = 2048 + (q == 3 ? delta : 0);
+            for (int i = 0; i < count; ++i) {
+                vals[size_t(q)*32768 + q*2048 + i] = ggml_fp32_to_fp16(0.0f);
+            }
+        }
+        ggml_backend_tensor_set(mask, vals.data(), 0, vals.size()*sizeof(vals[0]));
+    }
+};
+
 // large Q values, so the online softmax has to rescale the partial results
 struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
     static constexpr int q_range = 20;
@@ -12995,6 +13021,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                 256, 256, 2, {4, 1}, kv, 4, true, false, 0.0f, 0.0f,
                 GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16,
                 {0, 1, 2, 3}, true, false, 2048));
+        }
+    }
+
+    if (const char * value = std::getenv("GGML_TEST_QSA_BOUND_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int delta : {-1, 0, 1}) {
+            test_cases.emplace_back(new test_flash_attn_ext_qsa_bound(delta));
         }
     }
 
