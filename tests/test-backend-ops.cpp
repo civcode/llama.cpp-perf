@@ -1583,7 +1583,13 @@ struct test_case {
             std::vector<float> f1 = tensor_to_float(t1);
             std::vector<float> f2 = tensor_to_float(t2);
 
+            const bool mtp_flash = t1->op == GGML_OP_FLASH_ATTN_EXT && std::getenv("GGML_TEST_MTP_FA") != nullptr;
             for (size_t i = 0; i < f1.size(); i++) {
+                if (mtp_flash && (!std::isfinite(f1[i]) || !std::isfinite(f2[i]))) {
+                    printf("[%s] non-finite output at index %zu (%s=%f %s=%f) ", ggml_op_desc(t1), i, bn1, f1[i], bn2, f2[i]);
+                    ud->ok = false;
+                    return true;
+                }
                 // check for nans
                 if (std::isnan(f1[i]) || std::isnan(f2[i])) {
                     printf("[%s] NaN at index %zu (%s=%f %s=%f) ", ggml_op_desc(t1), i, bn1, f1[i], bn2, f2[i]);
@@ -1607,7 +1613,10 @@ struct test_case {
             }
 
             double err = ud->tc->err(f1.data(), f2.data(), f1.size());
-            if (err > ud->tc->max_err(ud->backend1)) {
+            if (mtp_flash) {
+                printf("[NMSE=%.9g] ", err);
+            }
+            if ((mtp_flash && !std::isfinite(err)) || err > ud->tc->max_err(ud->backend1)) {
                 printf("[%s] ERR = %.9f > %.9f ", ggml_op_desc(t1), err, ud->tc->max_err(ud->backend1));
                 //for (int i = 0; i < (int) f1.size(); i++) {
                 //    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
