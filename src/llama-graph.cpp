@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -3103,6 +3104,11 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         } else {
             cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
                                       hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+        }
+        // Stable layer identity for the opt-in QSA mask/output audit only.
+        // A tensor's graph-generated node number is not a stable layer label.
+        if (n_kv_max > 0 && std::getenv("GGML_QSA_MASK_AUDIT")) {
+            ggml_format_name(cur, "qsa_flash_attn_il%d", il);
         }
         res->add_fused_node({kv_rows ? LLM_FUSED_OP_FLASH_ATTN_KV_ROWS : LLM_FUSED_OP_FLASH_ATTN, cur, il});
 
