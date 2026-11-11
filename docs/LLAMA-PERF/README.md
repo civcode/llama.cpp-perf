@@ -2,7 +2,7 @@
 
 Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed CUDA + HIP inference using [civcode/llama.cpp-perf](https://github.com/civcode/llama.cpp-perf).
 
-**Status (2026-11-11):** two target-only llama-bench baselines, MTP-enabled server measurements at 8K/32K/98K context, and an initial ROCprofiler HIP trace have been captured. Handoff 0001 identified benchmark-driven HIP waits; handoff 0002 found no safe tensor-upload optimization; handoff 0003's matched 32K/98K MTP traces identified flash-attention as the leading incremental GPU-time hypothesis, but not a proven causal bottleneck. Handoff 0004 verified that the alternate HIP 256x256 GQA tile grouping changes kernel selection and MTP acceptance, but does not improve time per verification step; the apparent throughput gain is confounded by different generated tokens. Handoff 0005 adds deterministic long-KV CPU-reference coverage and a target-only fixed-work A/B. No validated kernel speedup or long-context numerical-equivalence claim has been established.
+**Status (2026-11-11):** two target-only llama-bench baselines, MTP-enabled server measurements at 8K/32K/98K context, and an initial ROCprofiler HIP trace have been captured. Handoff 0001 identified benchmark-driven HIP waits; handoff 0002 found no safe tensor-upload optimization; handoff 0003's matched 32K/98K MTP traces identified flash-attention as the leading incremental GPU-time hypothesis, but not a proven causal bottleneck. Handoff 0004 verified that the alternate HIP 256x256 GQA tile grouping changes kernel selection and MTP acceptance, but does not improve time per verification step; the apparent throughput gain is confounded by different generated tokens. Handoff 0005 validated deterministic long-KV 256x256 flash-attention cases on both R9700s and measured the experimental GQA2 tile as 6–8% slower on matching device-local fixed work. Mixed three-device inference is blocked by the NVIDIA PCIe Xid 79/154 failure. Handoff 0006 evaluates an opt-in HIP RDNA attention KV partition count using AMD-only tests without changing production defaults. No validated model-level speedup or long-context numerical-equivalence claim has been established.
 
 ## Documents
 
@@ -20,6 +20,9 @@ Profiling and benchmark record for Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS on mixed C
 - [GQA tile experiment helper](../../ggml/src/ggml-cuda/fattn-gqa-tune.h) - opt-in `GGML_HIP_FATTN_TILE_MAX_GQA=2`; disabled by default.
 - [Report 0004](../../.ai/reports/report-0004.md) - experimental GQA tile changes MTP acceptance and output, without faster time per verification.
 - [Collaborative handoff 0005](../../.ai/handoffs/handoff-0005.md) - long-KV deterministic validation and fixed-work target-only attention A/B.
+- [Report 0005](../../.ai/reports/report-0005.md) - long-KV CPU-reference passes, slower GQA2 device-local work, and NVIDIA PCIe Xid 79/154 blocker.
+- [Collaborative handoff 0006](../../.ai/handoffs/handoff-0006.md) - AMD-only experiment varying HIP 256x256 flash-attention KV parallel blocks.
+- [KV split-work diagnostic helper](../../ggml/src/ggml-cuda/fattn-parallel-tune.h) - opt-in `GGML_HIP_FATTN_TILE_PARALLEL_BLOCKS=1|2|4|8|16` for ROCm.
 - [Benchmark results](BENCHMARK-RESULTS.md) - measured throughput, context-depth scaling, limitations, and initial hypotheses.
 - [Original auto-fit benchmark](raw/results-20261111-140511.md) - unmodified uploaded Markdown table (24 tests).
 - [Original fixed-split benchmark](raw/results-fixed-split-20261111-142812.md) - unmodified uploaded Markdown table (6 tests).
@@ -51,6 +54,6 @@ At 163,840 tokens of prefilled depth, the auto-fit target-only benchmark reports
 
 This is evidence of context-length sensitivity, **not** evidence that any one kernel (QSA, experts, transfers, or scheduling) is the cause.
 
-**Next checkpoint:** complete [handoff 0005](../../.ai/handoffs/handoff-0005.md), testing 256x256 attention against the CPU reference at long KV and comparing fixed-work target-only decode with the HIP GQA option enabled/disabled. Use **28 build jobs** locally; do not dispatch GitHub Actions.
+**Next checkpoint:** complete [handoff 0006](../../.ai/handoffs/handoff-0006.md), an AMD-only flash-attention parallel-KV work experiment while CUDA0 is unavailable. Use **28 build jobs** locally; do not dispatch GitHub Actions. Resume three-GPU inference only after NVIDIA hardware recovery.
 
 The original `/home/chris/workspace/llama.cpp` checkout is not part of this experiment and should remain unchanged.

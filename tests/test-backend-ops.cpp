@@ -12929,7 +12929,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // Keep these out of the default test suite: the CPU reference at 32K
     // requires substantial memory and execution time.
     if (const char * value = std::getenv("GGML_TEST_LONG_FA"); value != nullptr && std::atoi(value) != 0) {
-        for (int64_t kv : {4096, 16384, 32768}) {
+        for (int64_t kv : {4096, 16384, 32768, 98304}) {
             test_cases.emplace_back(new test_flash_attn_ext_long_kv(
                 256, 256, 2, {4, 1}, kv, 3, true, false, 0.0f, 0.0f,
                 GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
@@ -13470,6 +13470,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 // Test cases for performance evaluation: should be representative of real-world use cases
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
+
+    // Opt-in deterministic fixed-work performance cases for HIP tile-splitting
+    // experiments. The same tensor initializer is used in test mode so the
+    // chosen split count can be checked against a CPU reference.
+    if (const char * value = std::getenv("GGML_TEST_LONG_FA"); value != nullptr && std::atoi(value) != 0) {
+        for (int64_t kv : {32768, 98304}) {
+            test_cases.emplace_back(new test_flash_attn_ext_long_kv(
+                256, 256, 2, {4, 1}, kv, 3, true, false, 0.0f, 0.0f,
+                GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+
 
     for (float n : {128.0f, 4096.0f, 32768.0f, 1048576.0f}) {
         test_cases.emplace_back(new test_arange(GGML_TYPE_F32, 0.0f, n, 1.0f));

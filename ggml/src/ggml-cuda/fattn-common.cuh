@@ -3,6 +3,9 @@
 #include "common.cuh"
 #include "convert.cuh"
 #include "vecdotq.cuh"
+#include "fattn-parallel-tune.h"
+
+#include <cstdlib>
 
 #include <cstdint>
 
@@ -1275,6 +1278,15 @@ void launch_fattn(
                 parallel_blocks = parallel_blocks_test;
             }
         }
+
+        // Experimental opt-in HIP RDNA 256x256 split-K policy comparison:
+        // keep the selected default untouched and use the existing combined
+        // partial-result path for all override choices.
+#ifdef GGML_USE_HIP
+        static const char * const split_k_setting = std::getenv("GGML_HIP_FATTN_TILE_PARALLEL_BLOCKS");
+        parallel_blocks = ggml_cuda_fattn_parallel_tune::select_parallel_blocks(
+            parallel_blocks, ntiles_KV, Q->ne[0], DV, GGML_CUDA_CC_IS_RDNA(cc), split_k_setting);
+#endif
 
         blocks_num.x = ntiles_x;
         blocks_num.y = parallel_blocks;
