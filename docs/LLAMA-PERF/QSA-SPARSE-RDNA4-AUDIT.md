@@ -2,6 +2,12 @@
 
 Last reviewed: 2026-11-11. This is an experiment on our fork, not an upstream change or a verified speedup.
 
+## Iteration 0016 diagnostic update
+
+[Report 0016](../../.ai/reports/report-0016.md) identifies a first layer-11 HIP attention-output difference with byte-identical Q/K/V and mask, followed by a layer-15 mask divergence. This does not establish acceptable model-level accuracy; fixed-token logits and GDN rollback state remain unverified, so full-model performance A/B remains blocked.
+
+For this specific investigation, `GGML_QSA_INPUT_DIR=<external-dir>` plus `GGML_QSA_MASK_AUDIT` dumps the first audited HIP0 layer-11 Q/K/V tensor spans, capped at 128 MiB per tensor, with type, dimensions and byte strides logged. It is disabled by default and synchronizes the stream. Spans can contain padding or unused cache data; keep them outside Git and interpret only using the logged strides. It is deliberately not a general sequence-aligned state capture.
+
 ## Iteration 0014 validation update
 
 [Report 0014](../../.ai/reports/report-0014.md) validates the separately gated GQA12 operator and overflow rejection on both R9700s. A short 32K model probe confirmed sparse launches and matching output/acceptance history, but measured mask-union differences versus a reproducible dense baseline. Fixed-token logits and recurrent-state correctness remain unverified; no end-to-end performance claim or default promotion is justified.

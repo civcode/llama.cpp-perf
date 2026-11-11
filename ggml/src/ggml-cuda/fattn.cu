@@ -1057,9 +1057,45 @@ static void ggml_cuda_qsa_dump_attn_output(
         (long long) dst->ne[2], (long long) dst->ne[3], path);
 }
 
+// One bounded capture of the first HIP0 layer-11 QSA invocation for input
+// identity diagnosis. Tensor spans may contain padding; use ne/nb to interpret.
+static void ggml_cuda_qsa_dump_first_inputs(ggml_backend_cuda_context & ctx, const ggml_tensor * dst, long audit_id) {
+    const char * dir = std::getenv("GGML_QSA_INPUT_DIR");
+    if (!dir) return;
+    if (!std::getenv("GGML_QSA_MASK_AUDIT")) GGML_ABORT("QSA input capture requires mask audit");
+#ifdef GGML_USE_HIP
+    if (audit_id < 0 || ctx.device != 0 || strcmp(dst->name, "qsa_flash_attn_il11") != 0) return;
+    static std::atomic<bool> captured{false};
+    if (captured.exchange(true)) return;
+    for (int i = 0; i < 3; ++i) {
+        const ggml_tensor * t = dst->src[i];
+        const size_t bytes = ggml_nbytes(t);
+        if (!t->data || bytes == 0 || bytes > size_t(128)*1024*1024) GGML_ABORT("QSA input capture: invalid tensor span");
+        std::vector<unsigned char> data(bytes);
+        CUDA_CHECK(cudaMemcpyAsync(data.data(), t->data, bytes, cudaMemcpyDeviceToHost, ctx.stream()));
+        CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+        char path[4096];
+        const int n = snprintf(path, sizeof(path), "%s/HIP0-id%ld-%c.bin", dir, audit_id, "qkv"[i]);
+        if (n < 0 || size_t(n) >= sizeof(path)) GGML_ABORT("QSA input capture: path too long");
+        FILE * f = fopen(path, "wb");
+        if (!f) GGML_ABORT("QSA input capture: cannot open %s", path);
+        const size_t written = fwrite(data.data(), 1, bytes, f);
+        const int closed = fclose(f);
+        if (written != bytes || closed != 0) GGML_ABORT("QSA input capture: write failed");
+        fprintf(stderr, "QSA_INPUT id=%ld name=%c type=%s ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu bytes=%zu path=%s\n",
+                audit_id, "qkv"[i], ggml_type_name(t->type),
+                (long long)t->ne[0], (long long)t->ne[1], (long long)t->ne[2], (long long)t->ne[3],
+                t->nb[0], t->nb[1], t->nb[2], t->nb[3], bytes, path);
+    }
+#else
+    GGML_UNUSED(ctx); GGML_UNUSED(dst); GGML_UNUSED(audit_id);
+#endif
+}
+
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
     const long qsa_audit_id = ggml_cuda_qsa_audit_mask(ctx, dst);
+    ggml_cuda_qsa_dump_first_inputs(ctx, dst, qsa_audit_id);
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");

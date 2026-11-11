@@ -44,6 +44,16 @@ class CompareOutputsTest(unittest.TestCase):
         self.assertEqual(r["ops_compared"], 1)
         self.assertEqual(r["ops_changed"], 0)
 
+    def test_signed_zero_is_binary_different(self):
+        values = self.values.copy()
+        values[0] = 0.0
+        a = make_log(self.root, "dense", values)
+        values[0] = -0.0
+        b = make_log(self.root, "sparse", values)
+        r = compare_logs(a, b)
+        self.assertEqual(r["ops_changed"], 0)
+        self.assertEqual(r["ops_binary_different"], 1)
+
     def test_single_changed_head_feature(self):
         a = make_log(self.root, "dense", self.values)
         changed = self.values.copy()

@@ -175,7 +175,7 @@ def compare_logs(dense: Path, sparse: Path, abs_tol: float = 0.0,
         raise ValueError(f"device sets differ: {list(a)} vs {list(b)}")
     result = {"dense_log": str(dense), "other_log": str(sparse),
               "abs_tol": abs_tol, "rel_tol": rel_tol,
-              "ops_compared": 0, "ops_changed": 0,
+              "ops_compared": 0, "ops_changed": 0, "ops_binary_different": 0,
               "first_changed_per_device": [], "all_max_errors": []}
     for device in sorted(a):
         if len(a[device]) != len(b[device]):
@@ -184,6 +184,8 @@ def compare_logs(dense: Path, sparse: Path, abs_tol: float = 0.0,
         for left, right in zip(a[device], b[device]):
             diff = compare_pair(left, right, abs_tol, rel_tol)
             result["ops_compared"] += 1
+            if not diff["binary_identical"]:
+                result["ops_binary_different"] += 1
             if diff["changed_elements"]:
                 result["ops_changed"] += 1
                 if first is None:
@@ -213,7 +215,7 @@ def main() -> int:
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, indent=2))
-    return 2 if args.require_identical and result["ops_changed"] else 0
+    return 2 if args.require_identical and result["ops_binary_different"] else 0
 
 
 if __name__ == "__main__":
