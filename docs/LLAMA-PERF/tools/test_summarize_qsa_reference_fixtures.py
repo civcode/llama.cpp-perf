@@ -26,9 +26,9 @@ def create_fixture(root: Path, fid: str, *,
             position = 4096 + step
             event = {
                 "kind": "event", "step": step, "phase": "teacher_forced_logits",
-                "seq": 0, "position": position, "target_ids": [5+step],
+                "seq": 0, "position": position, "target_ids": [1],
                 "draft_ids": [], "accepted": [], "rollback": False,
-                "replay": False, "prefix_token_hash64": str(step),
+                "replay": False, "prefix_token_hash64": f"{step:016x}",
                 "prefix_token_count": position+1,
                 "query_group_first_pos": 4096,
             }
@@ -129,6 +129,26 @@ class ReferenceSummaryTests(unittest.TestCase):
             labels = Path(a[run]) / "references.jsonl"
             labels.write_text("".join(labels.read_text().splitlines(keepends=True)[:3]))
         with self.assertRaisesRegex(ValueError, "Q=4 groups"):
+            summarize(write_manifest(self.root, [a]))
+
+    def test_incorrect_group_boundary_rejected_even_if_divisible_by_four(self):
+        a = create_fixture(self.root, "a")
+        for run in ("dense_a", "dense_b", "sparse"):
+            file = Path(a[run]) / "manifest.jsonl"
+            records = [json.loads(line) for line in file.read_text().splitlines()]
+            records[2]["query_group_first_pos"] += 1
+            file.write_text("".join(json.dumps(x) + "\n" for x in records))
+        with self.assertRaisesRegex(ValueError, "invalid Q=4 group"):
+            summarize(write_manifest(self.root, [a]))
+
+    def test_bad_next_token_label_rejected_even_if_all_runs_match(self):
+        a = create_fixture(self.root, "a")
+        for run in ("dense_a", "dense_b", "sparse"):
+            file = Path(a[run]) / "references.jsonl"
+            records = [json.loads(line) for line in file.read_text().splitlines()]
+            records[1]["label_token"] = 0
+            file.write_text("".join(json.dumps(x) + "\n" for x in records))
+        with self.assertRaisesRegex(ValueError, "does not match next input"):
             summarize(write_manifest(self.root, [a]))
 
     def test_missing_reference_text_rejected(self):

@@ -29,10 +29,11 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 
 from compare_qsa_model_state import compare as compare_state, read_manifest
-from compare_qsa_reference_nll import compare as compare_nll
+from compare_qsa_reference_nll import compare as compare_nll, read_labels
 
 
 def _resolve(manifest: Path, name: str) -> Path:
@@ -67,6 +68,32 @@ def _require_identical_dense_files(a: Path, b: Path) -> int:
         if _sha256(file_a, max_bytes=8*1024*1024) != _sha256(file_b, max_bytes=8*1024*1024):
             raise ValueError(f"dense control raw logits differ at {key}")
     return len(tensors_a)
+
+
+def _require_q4_schedule(manifest: Path, labels_file: Path, max_rows: int) -> None:
+    events, tensors = read_manifest(manifest)
+    labels = read_labels(labels_file, max_rows)
+    rows = sorted(events.values(), key=lambda event: event["step"])
+    if len(rows) < 4 or len(rows) % 4 or len(rows) != len(tensors):
+        raise ValueError("incomplete Q=4 groups")
+    start = rows[0]["position"]
+    for i, event in enumerate(rows):
+        position = start + i
+        if (event["step"] != i or event["phase"] != "teacher_forced_logits" or
+                event["seq"] != 0 or event["position"] != position or
+                event.get("query_group_first_pos") != start + (i // 4) * 4 or
+                event.get("prefix_token_count") != position + 1 or
+                not isinstance(event.get("prefix_token_hash64"), str) or
+                re.fullmatch(r"[0-9a-f]{16}", event["prefix_token_hash64"]) is None or
+                not isinstance(event.get("target_ids"), list) or len(event["target_ids"]) != 1 or
+                type(event["target_ids"][0]) is not int):
+            raise ValueError(f"invalid Q=4 group or prefix identity at row {i}")
+        key = (i, event["phase"], event["seq"], position)
+        if key not in labels or (i + 1 < len(rows) and
+                                 [labels[key]["label_token"]] != rows[i + 1].get("target_ids")):
+            raise ValueError(f"reference label does not match next input at row {i}")
+    # The final label has no next event; validate it independently against
+    # tokenization of the input text, not against a model prediction.
 
 
 def summarize(manifest: Path, max_rows: int = 64) -> dict:
@@ -124,6 +151,7 @@ def summarize(manifest: Path, max_rows: int = 64) -> dict:
         control_rows = _require_identical_dense_files(logs["dense_a"], logs["dense_b"])
         if control_rows < 4 or control_rows % 4 != 0 or control_rows > max_rows:
             raise ValueError(f"control rows must be Q=4 groups within --max-rows for {fid}")
+        _require_q4_schedule(logs["dense_a"], ref_files[0], max_rows)
 
         result = compare_nll(logs["dense_a"], logs["sparse"],
                              ref_files[0], max_rows=max_rows, max_examples=0)
