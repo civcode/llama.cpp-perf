@@ -190,10 +190,14 @@ def compare_rows(a: dict, b: dict, query: int) -> dict:
                       if before["kv_cells"] is not None else None)
     mapped_added = (sorted(after["kv_cells"]-before["kv_cells"])
                     if after["kv_cells"] is not None else None)
-    changed = bool(removed or added)
+    changed_pool_selection = bool(removed or added)
+    changed_kv_selection = bool(mapped_removed or mapped_added)
+    changed = changed_pool_selection or changed_kv_selection
     return {
         "query": query,
         "changed_selection": changed,
+        "changed_pool_selection": changed_pool_selection,
+        "changed_kv_selection": changed_kv_selection,
         "pools_removed_count": len(removed), "pools_added_count": len(added),
         "pools_removed_first": removed[:16], "pools_added_first": added[:16],
         "dense_lowest_selected_score": before["cutoff_score"],
@@ -221,12 +225,17 @@ def compare(dense: Path, other: Path, max_events: int = 8) -> dict:
     summary = {
         "dense_log": str(dense), "other_log": str(other),
         "kind": next(iter(left))[2], "groups_compared": 0, "queries_compared": 0,
-        "queries_with_changed_pool_selections": 0, "groups_with_changed_selections": 0,
+        "queries_with_changed_pool_selections": 0,
+        "queries_with_changed_kv_selections": 0,
+        "groups_with_changed_selections": 0,
         "events": [], "first_changed_selection": None,
     }
     for key in sorted(left):
         a, b = left[key], right[key]
         for field in ("n_pool", "n_top", "nq", "kv", "kind"):
+            if a[field] != b[field]:
+                raise ValueError(f"unaligned {field} for group {key}")
+        for field in ("bshape", "eshape"):
             if a[field] != b[field]:
                 raise ValueError(f"unaligned {field} for group {key}")
         summary["groups_compared"] += 1
@@ -235,7 +244,10 @@ def compare(dense: Path, other: Path, max_events: int = 8) -> dict:
             row = compare_rows(a, b, query)
             summary["queries_compared"] += 1
             if row["changed_selection"]:
-                summary["queries_with_changed_pool_selections"] += 1
+                if row["changed_pool_selection"]:
+                    summary["queries_with_changed_pool_selections"] += 1
+                if row["changed_kv_selection"]:
+                    summary["queries_with_changed_kv_selections"] += 1
                 changed_group = True
                 event = {"backend": key[0], "device": key[1],
                          "kind": key[2], "group": key[3], **row}
@@ -262,7 +274,7 @@ def main() -> int:
     except (ValueError, OSError, KeyError, OverflowError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, indent=2, allow_nan=False))
-    return 2 if args.require_identical_selections and result["queries_with_changed_pool_selections"] else 0
+    return 2 if args.require_identical_selections and result["groups_with_changed_selections"] else 0
 
 
 if __name__ == "__main__":
