@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -77,7 +78,7 @@ int main(int argc, char ** argv) {
     }
     const std::string text((std::istreambuf_iterator<char>(text_stream)),
                             std::istreambuf_iterator<char>());
-    if (!text_stream.eof() || text.empty() || text.size() > 1024 * 1024) {
+    if (text_stream.bad() || text.empty() || text.size() > 1024 * 1024) {
         std::fprintf(stderr, "Reference text must be 1 byte..1 MiB\n");
         return 2;
     }
