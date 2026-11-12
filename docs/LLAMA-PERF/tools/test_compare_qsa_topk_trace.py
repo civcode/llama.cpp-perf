@@ -103,7 +103,11 @@ class ScoreTopkCompareTest(unittest.TestCase):
         sparse = write_run(self.root, "sparse", mismatched_map=True)
         result = compare(dense, sparse)
         self.assertEqual(result["queries_with_changed_pool_selections"], 0)
-        self.assertEqual(result["groups_with_changed_selections"], 0)
+        self.assertEqual(result["queries_with_changed_kv_selections"], 1)
+        self.assertEqual(result["groups_with_changed_selections"], 1)
+        first = result["first_changed_selection"]
+        self.assertEqual(first["kv_cells_removed_first"], [4])
+        self.assertEqual(first["kv_cells_added_first"], [7])
 
     def test_bad_or_missing_part_detected(self):
         path = write_run(self.root, "a")
