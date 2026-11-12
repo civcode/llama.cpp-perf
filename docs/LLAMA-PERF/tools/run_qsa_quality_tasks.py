@@ -18,6 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 import socket
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -144,7 +145,11 @@ def run(tasks_file: Path, url: str, condition: str, output: Path,
     endpoint = _localhost_api(url)
     with output.open("x", encoding="utf-8") as out:
         for task in tasks:
+            # Local monotonic markers correlate each request with the backend's
+            # QSA audit timestamps; they are not a throughput measurement.
+            start_ns = time.monotonic_ns()
             result = request_completion(endpoint, task["prompt"], task["max_tokens"], timeout)
+            end_ns = time.monotonic_ns()
             record = {
                 "id": task["id"],
                 "kind": task["kind"],
@@ -153,6 +158,8 @@ def run(tasks_file: Path, url: str, condition: str, output: Path,
                 "prompt_sha256": sha256(task["prompt"].encode("utf-8")),
                 "requested_max_tokens": task["max_tokens"],
                 "sampling": {"temperature": 0.0, "top_p": 1.0, "seed": 42},
+                "request_start_monotonic_ns": start_ns,
+                "request_end_monotonic_ns": end_ns,
                 **result,
             }
             out.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")

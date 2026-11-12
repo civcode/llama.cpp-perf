@@ -142,14 +142,13 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         finishes_stable = run["dense-a"]["finish_reason"] == run["dense-b"]["finish_reason"]
         counts = [run[name]["prompt_tokens"] for name in CONDITIONS]
         dense_counts = counts[:2]
-        same_dense_counts = (all(n is None for n in dense_counts) or
-                             all(n is not None for n in dense_counts) and
+        # Missing usage cannot establish that the tokenized inputs align.
+        same_dense_counts = (all(n is not None for n in dense_counts) and
                              dense_counts[0] == dense_counts[1])
         stable = texts_stable and finishes_stable and same_dense_counts
         # Tokenization mismatches between dense and sparse are a separate
         # confounder, never a *dense repeat* instability.
-        same_all_counts = (all(n is None for n in counts) or
-                           all(n is not None for n in counts) and len(set(counts)) == 1)
+        same_all_counts = all(n is not None for n in counts) and len(set(counts)) == 1
         prompt_usage_mismatch += int(not same_all_counts)
         category = categories[task["kind"]]
         category["tasks"] += 1
@@ -169,6 +168,8 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         classification = "control_unstable"
         if stable and not same_all_counts:
             classification = "prompt_usage_mismatch"
+        elif stable and eligible_length is False:
+            classification = "below_context_floor"
         elif stable:
             if scored["dense-a"][0] and not scored["sparse"][0]:
                 classification = "sparse_regression"
