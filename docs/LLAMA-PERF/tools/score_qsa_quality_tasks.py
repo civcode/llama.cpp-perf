@@ -127,6 +127,11 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         "sparse_improvements": 0, "same_score": 0,
     })
     details = []
+    difficulty_summary = defaultdict(lambda: {
+        "tasks": 0, "dense_a_pass": 0, "dense_b_pass": 0, "sparse_pass": 0,
+        "stable_dense_solved": 0, "sparse_regressions": 0,
+        "sparse_improvements": 0, "control_unstable": 0,
+    })
     controls_unstable = 0
     prompt_usage_mismatch = 0
     below_floor = 0
@@ -151,6 +156,14 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         same_all_counts = all(n is not None for n in counts) and len(set(counts)) == 1
         prompt_usage_mismatch += int(not same_all_counts)
         category = categories[task["kind"]]
+        tier = task.get("difficulty", "unclassified")
+        if tier not in ("anchored", "lookup", "unclassified"):
+            raise ValueError(f"invalid task difficulty {tier!r} at {key}")
+        difficulty = difficulty_summary[tier]
+        difficulty["tasks"] += 1
+        difficulty["dense_a_pass"] += int(scored["dense-a"][0])
+        difficulty["dense_b_pass"] += int(scored["dense-b"][0])
+        difficulty["sparse_pass"] += int(scored["sparse"][0])
         category["tasks"] += 1
         for name, label in (("dense-a", "dense_a_pass"), ("dense-b", "dense_b_pass"),
                             ("sparse", "sparse_pass")):
@@ -165,6 +178,10 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         else:
             eligible_length = None
             unknown_usage += 1
+        if not stable:
+            difficulty["control_unstable"] += 1
+        if stable and same_all_counts and eligible_length is True and scored["dense-a"][0]:
+            difficulty["stable_dense_solved"] += 1
         classification = "control_unstable"
         if stable and not same_all_counts:
             classification = "prompt_usage_mismatch"
@@ -174,15 +191,17 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
             if scored["dense-a"][0] and not scored["sparse"][0]:
                 classification = "sparse_regression"
                 category["sparse_regressions"] += 1
+                difficulty["sparse_regressions"] += 1
             elif not scored["dense-a"][0] and scored["sparse"][0]:
                 classification = "sparse_improvement"
                 category["sparse_improvements"] += 1
+                difficulty["sparse_improvements"] += 1
             else:
                 classification = "same_score"
                 category["same_score"] += 1
 
         details.append({
-            "id": key, "kind": task["kind"],
+            "id": key, "kind": task["kind"], "difficulty": tier,
             "classification": classification, "dense_repeat_stable": stable,
             "prompt_usage_aligned": same_all_counts,
             "dense_a": {"pass": scored["dense-a"][0], "reason": scored["dense-a"][1]},
@@ -212,6 +231,7 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         "sparse_regressions_with_stable_control": sum(v["sparse_regressions"] for v in categories.values()),
         "sparse_improvements_with_stable_control": sum(v["sparse_improvements"] for v in categories.values()),
         "per_category": dict(categories),
+        "per_difficulty": dict(difficulty_summary),
         "per_task": details,
         "note": (
             "A small synthetic, predeclared exact-answer task pilot; not a trained-model "
