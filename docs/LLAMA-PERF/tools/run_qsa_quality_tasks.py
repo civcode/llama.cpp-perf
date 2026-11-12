@@ -56,14 +56,17 @@ def load_tasks(path: Path) -> tuple[str, list[dict]]:
         if not isinstance(key, str) or not key or len(key) > 80 or key in seen:
             raise ValueError("invalid/duplicate task identifier")
         seen.add(key)
-        if t.get("kind") not in KINDS:
+        if t.get("kind") not in (*KINDS, "benchmark_mcq"):
             raise ValueError(f"invalid task kind {key}")
         prompt = t.get("prompt")
         if not isinstance(prompt, str) or not (1 <= len(prompt.encode("utf-8")) <= 245760):
             raise ValueError(f"missing/oversized task prompt {key}")
         expected = t.get("expected")
-        if not isinstance(expected, dict) or expected.get("type") not in ("literal", "json"):
+        if not isinstance(expected, dict) or expected.get("type") not in ("literal", "json", "choice"):
             raise ValueError(f"invalid grading rubric for {key}")
+        if t["kind"] == "benchmark_mcq" and (expected.get("type") != "choice" or
+                                              expected.get("value") not in ("A", "B", "C", "D")):
+            raise ValueError(f"invalid multiple-choice gold answer for {key}")
         max_tokens = t.get("max_tokens")
         if type(max_tokens) is not int or not (1 <= max_tokens <= 256):
             raise ValueError(f"invalid token budget for {key}")
