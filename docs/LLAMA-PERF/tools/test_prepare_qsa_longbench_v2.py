@@ -169,6 +169,63 @@ class LongBenchV2AdapterTests(unittest.TestCase):
             make_manifest(self.source, limit=2,
                           min_context_bytes=100, max_prompt_bytes=200)
 
+    def test_nonoverlap_previous_sample_and_expand_to_36(self):
+        rows = [source_row(i, "domain-" + str(i % 6)) for i in range(50)]
+        self.source.write_text("".join(json.dumps(x)+"\n" for x in rows))
+        first = make_manifest(self.source, seed=20261115, limit=12,
+                              min_context_bytes=100, max_prompt_bytes=4000)
+        excluded = {x["benchmark_id"] for x in first["tasks"]}
+        expanded = make_manifest(self.source, seed=20261116, limit=36,
+                                 min_context_bytes=100, max_prompt_bytes=4000,
+                                 exclude_ids=excluded)
+        self.assertEqual(len(expanded["tasks"]), 36)
+        self.assertEqual(set(expanded["excluded_source_ids"]), excluded)
+        self.assertTrue({t["benchmark_id"] for t in expanded["tasks"]}.isdisjoint(excluded))
+        self.assertEqual(len({t["benchmark_id"] for t in expanded["tasks"]}), 36)
+        self.assertEqual(len(expanded["selected_domains"]), 6)
+        self.assertEqual(expanded, make_manifest(
+            self.source, seed=20261116, limit=36,
+            min_context_bytes=100, max_prompt_bytes=4000,
+            exclude_ids=excluded))
+
+    def test_reject_sample_limit_and_invalid_exclusion(self):
+        with self.assertRaisesRegex(ValueError, "limit 1..36"):
+            make_manifest(self.source, limit=37,
+                          min_context_bytes=100, max_prompt_bytes=4000)
+        with self.assertRaisesRegex(ValueError, "exclude_ids"):
+            make_manifest(self.source, limit=2, exclude_ids={"ok", 3},
+                          min_context_bytes=100, max_prompt_bytes=4000)
+
+    def test_cli_exclusion_checks_source_digest(self):
+        import subprocess
+        import sys
+        first = make_manifest(self.source, seed=1, limit=4,
+                              min_context_bytes=100, max_prompt_bytes=4000)
+        prior = self.root / "previous.json"
+        prior.write_text(json.dumps(first))
+        output = self.root / "next.json"
+        script = Path(__file__).with_name("prepare_qsa_longbench_v2.py")
+        command = [
+            sys.executable, str(script), str(self.source), "--out", str(output),
+            "--exclude-manifest", str(prior), "--seed", "2",
+            "--limit", "5", "--min-context-bytes", "100",
+            "--max-prompt-bytes", "4000",
+        ]
+        proc = subprocess.run(command, capture_output=True, text=True,
+                              timeout=20, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        selected = json.loads(output.read_text())
+        self.assertTrue({r["benchmark_id"] for r in selected["tasks"]}.isdisjoint(
+            {r["benchmark_id"] for r in first["tasks"]}))
+        output.unlink()
+        first["source_file_sha256"] = "0"*64
+        prior.write_text(json.dumps(first))
+        proc = subprocess.run(command, capture_output=True, text=True,
+                              timeout=20, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("source digest differs", proc.stderr)
+        self.assertFalse(output.exists())
+
     def test_scoring_accepts_unambiguous_choice_forms(self):
         for output in ("B", "(B)", "B.", "Answer: B",
                        "The correct answer is (B)", "option b"):
