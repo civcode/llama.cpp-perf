@@ -862,7 +862,7 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
     if (const char * option = std::getenv("LLAMA_QSA_GDN_SERIAL_REF_LAYER")) {
         char * end = nullptr;
         const long chosen = std::strtol(option, &end, 10);
-        if (!end || *end != '\0' || chosen < 0 ||
+        if (!end || end == option || *end != '\0' || chosen < 0 ||
             chosen >= (long) r_l.size() || !r_l[chosen] || !s_l[chosen]) {
             return false;
         }
@@ -879,7 +879,7 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
     if (const char * option = std::getenv("LLAMA_QSA_GDN_LAYER_FILTER")) {
         char * end = nullptr;
         const long chosen = std::strtol(option, &end, 10);
-        if (!end || *end != '\0' || chosen < 0 || chosen >= (long) r_l.size() ||
+        if (!end || end == option || *end != '\0' || chosen < 0 || chosen >= (long) r_l.size() ||
             !r_l[chosen] || !s_l[chosen]) return false;
         observe_layer = (int) chosen;
     }
