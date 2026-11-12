@@ -88,6 +88,13 @@ class SerializerBytesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate"):
             compare(a, b)
 
+    def test_reject_missing_serialized_s_row(self):
+        a, b = build(self.root, "missing_serial")
+        rows = [json.loads(line) for line in b.read_text().splitlines()]
+        b.write_text("".join(json.dumps(row)+"\n" for row in rows if row["name"] != "gdn_s"))
+        with self.assertRaisesRegex(ValueError, "incomplete serialized reference coverage"):
+            compare(a, b)
+
     def test_reject_missing_observer_row(self):
         a, b = build(self.root, "missing", missing=True)
         with b.open("a") as f:
