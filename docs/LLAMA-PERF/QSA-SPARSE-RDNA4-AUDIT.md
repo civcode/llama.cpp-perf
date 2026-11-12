@@ -117,6 +117,36 @@ Neither new diagnostic nor its tests have been executed in Chat AI's local works
 
 [Report 0018](../../.ai/reports/report-0018.md) measures layer-15 score cutoff swaps and captures actual pre-sampling verification logits with matching token/candidate histories. `LLAMA_QSA_LOGITS_DIR=<fresh-empty-external-directory>` enables a diagnostic for the first 16 verification groups on slot 0 (text only): it synchronously copies the full F32 vocabulary row for every verification batch index, and writes an external `manifest.jsonl` with the actual input history, draft IDs, sampler result and pending rollback indicator. It does not force tokens or acceptance, and does not capture logical GDN state or a post-rollback state. Do not use for performance or infer recurrent-state correctness. Compare manifests with `compare_qsa_model_state.py`; it rejects mismatched histories.
 
+## Iteration 0018 findings and new opt-in logical GDN observer
+
+[Report 0018](../../.ai/reports/report-0018.md) confirmed that layer-15 QSA selected-pool changes arise from a **real score-cutoff crossing**: first query swaps pool 1040 for 6316, remapping four KV entries 4160–4163 to 25264–25267, with identical pool-to-KV maps. Dense cutoff margin was only 0.0034008; sparse margin 0.0010815; maximum paired F32 score difference was 0.0169210. This establishes top-k sensitivity, but not that layer-11 arithmetic alone caused it.
+
+The same iteration aligned 64 actual, naturally sampled MTP target-verification logit rows (16 groups: eight fully accepted and eight rejected/rollback pending) with identical token/draft/acceptance histories. Dense A/B were **bitwise identical** across all full-vocabulary vectors. Sparse differed at **all 64 rows**, with max abs logit difference **0.9186411** and maximum per-row NMSE **0.00462375**. This is materially different from the earlier FP64 attention-only NMSE (~1e-6), so **model numerical equivalence is not established**. Do not change tolerance to make the divergence disappear; investigate the causal chain and downstream behavior. Full-model A/B throughput, graph replay and default promotion remain blocked.
+
+### New recurrent-only observer: disabled by default, not yet compiled or GPU-verified
+
+Chat AI added an internal, diagnostic-only bridge `src/llama-qsa-debug.h` / `src/llama-context.cpp`, a recurrent-cache reader in `src/llama-memory-recurrent.cpp`, and server integration under `LLAMA_QSA_GDN_DIR=<fresh-external-directory>`. This remains **unverified until local GPU tests**. It captures slot 0, text-only speculative verification for at most the first 16 verification groups, at the following boundaries:
+
+- `pre_verification`: after the target model computed verification logits, before sampling/acceptance;
+- `post_verification`: after sampling decisions, before any cache rollback or commit;
+- `post_accept`: after the accepted-token history and cache truncation/commit;
+- `post_rollback`: after a rejected group either triggers checkpoint restoration and sequence removal or updates the recurrent rollback state through sequence removal. For pending rollback, snapshot-plane identity is logged; **reprocessing on the next inference step is a separate event**, not implied by a post-rollback snapshot.
+
+For every snapshot, the server appends an event to `manifest.jsonl` with strictly increasing checkpoint ordinal `step`, `phase`, `seq`, logical verification starting `position`, the same actual full target token history and draft IDs, `accepted`, `rollback`, and `replay` fields. The internal bridge synchronizes the model and dynamically locates its hybrid recurrent cache. It resolves the active sequence tail and current logical source row using `rs_idx[seq] * size + (cell.src >= 0 ? cell.src : tail)`, *matching* `llama_memory_recurrent::state_write`. Only current R/S/P row data is read; all existing attention/indexer KV caches are excluded. Each tensor record includes `layer`, `name=gdn_r|gdn_s|gdn_p`, dtype, 1-D row shape, the raw little-endian file path, active physical cell, resolved source row, pending rollback snapshot-plane ID and logical cell position. Reads occur via `ggml_backend_tensor_get` after `llama_context::synchronize`. Unsupported layouts, absent sequence ownership, impossible row or snapshot indices, invalid paths, write failures and missing recurrent tensors cause diagnostic failure instead of silently comparing incorrect state.
+
+The observer enforces an 8 MiB per-row limit and 512 MiB aggregate raw output limit per process. Its separate `LLAMA_QSA_GDN_DIR` keeps the state manifest distinct from `LLAMA_QSA_LOGITS_DIR` (the latter's full-vocabulary logits observer already worked in Report 0018). **Run both flags in each dense and sparse process** for complementary evidence and unique, initially empty external directories. All captures add GPU synchronization and must never be used for benchmarking. Do not commit raw captures or token histories.
+
+The host comparator `docs/LLAMA-PERF/tools/compare_qsa_model_state.py` now allows up to 16,384 manifest records, with a 32 MiB manifest cap, and additionally rejects misaligned `logical_cell_pos` between corresponding tensor records. Physical cell numbers and rollback plane IDs are attribution fields rather than comparison keys. Its existing tests were extended for checkpoint-phase alignment and logical-cell-position mismatches; the new source/tests require local validation.
+
+Use:
+```text
+python3 docs/LLAMA-PERF/tools/test_compare_qsa_model_state.py
+python3 docs/LLAMA-PERF/tools/compare_qsa_model_state.py dense-A-gdn/manifest.jsonl dense-B-gdn/manifest.jsonl
+python3 docs/LLAMA-PERF/tools/compare_qsa_model_state.py dense-A-gdn/manifest.jsonl sparse-gdn/manifest.jsonl
+```
+
+**Caution:** A completed GDN capture must first be validated independently against recurrent-only serialization, and dense A/B repeat stability must be shown. The point-in-time `post_rollback` snapshot is not proof that subsequent replay/reprocessing state was correct. The observer only covers one text slot and first 16 verification groups; production mixed sequences and GPU graph replay remain unverified. See Handoff 0019.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
