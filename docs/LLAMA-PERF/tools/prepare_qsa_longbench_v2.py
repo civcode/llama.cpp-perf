@@ -2,7 +2,7 @@
 """Freeze a pre-inference LongBench-v2 multiple-choice quality pilot.
 
 Reads an authorized local JSON/JSONL export of official LongBench-v2 records,
-selects at most 12 examples, balanced round-robin across source domains.
+selects at most 36 examples, balanced round-robin across source domains.
 The manifest is compatible with existing dense-A/dense-B/sparse quality
 runner, baseline calibrator and exact-answer scorer.
 
