@@ -1,7 +1,6 @@
 // Standalone CPU test for the diagnostic-only HIP GQA12 layer filter.
 // Build/run locally, no CUDA, HIP, GPU, or GitHub Actions:
-// c++ -std=c++17 -O2 -Wall -Wextra -Werror -o /tmp/test-qsa-layer-filter \
-//   docs/LLAMA-PERF/tools/test_qsa_gqa12_layer_filter.cpp && /tmp/test-qsa-layer-filter
+// Compile this file with c++ -std=c++17 -Wall -Wextra -Werror, then run it.
 #include "../../../ggml/src/ggml-cuda/fattn-sparse-q4-gqa12-layer-filter.h"
 
 #include <cassert>

@@ -52,6 +52,9 @@ def read_capture(log: Path) -> dict:
             for marker in records:
                 f = fields(line, marker)
                 if f:
+                    # These are bounded-capture notices, not tensor records.
+                    if marker in ("QSA_MASK_DUMP", "QSA_ATTN_OUT") and "limit" in f:
+                        break
                     records[marker].append(f)
                     break
     metas = records["QSA_INPUT_META"]

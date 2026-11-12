@@ -75,6 +75,14 @@ class ReplayReferenceTest(unittest.TestCase):
         self.assertLess(result["dense_vs_fp64_reference"]["max_abs"], 1e-6)
         self.assertLess(result["sparse_vs_fp64_reference"]["max_abs"], 1e-6)
 
+    def test_limit_notices_are_not_capture_records(self):
+        a = write_run(self.root, "dense")
+        b = write_run(self.root, "sparse")
+        with a.open("a") as f:
+            f.write("QSA_MASK_DUMP limit=2 reached backend=HIP device=0; subsequent masks not dumped\n")
+            f.write("QSA_ATTN_OUT limit=2 reached device=0\n")
+        self.assertTrue(compare(a, b)["inputs_and_mask_identical"])
+
     def test_sparse_error_detected(self):
         a = write_run(self.root, "dense")
         b = write_run(self.root, "sparse", nudge=0.01)
