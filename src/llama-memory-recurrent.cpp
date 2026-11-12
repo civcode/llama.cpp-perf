@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -778,6 +780,112 @@ size_t llama_memory_recurrent::size_p_bytes() const {
     }
 
     return size_p_bytes;
+}
+
+// Diagnostic only: serialize the active logical GDN cell rather than the
+// hybrid memory's full long-context KV cache. The source-row mapping is the
+// same as state_write(): rs_idx*size + (cell.src >= 0 ? cell.src : cell_index).
+// This function only reads data and never changes the cache or rollback index.
+bool llama_memory_recurrent::qsa_debug_dump_state(
+        llama_seq_id seq_id, const char * dir, unsigned step,
+        const char * phase, llama_pos position) const {
+    if (!dir || !phase || !*dir || !*phase ||
+        seq_id < 0 || (uint32_t) seq_id >= size ||
+        (size_t) seq_id >= rs_idx.size() || size == 0 || size > 65536) {
+        return false;
+    }
+    // Avoid path traversal, JSON string injection, or accidentally mixing
+    // unrelated output trees. Caller must create the diagnostic directory.
+    for (const char * c = dir; *c; ++c) {
+        if (!( (*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') ||
+               (*c >= '0' && *c <= '9') || *c == '_' || *c == '-' ||
+               *c == '.' || *c == '/')) {
+            return false;
+        }
+    }
+    for (const char * c = phase; *c; ++c) {
+        if (!( (*c >= 'a' && *c <= 'z') || *c == '_')) return false;
+    }
+
+    const int32_t tail = cells[seq_id].tail;
+    if (tail < 0 || (uint32_t) tail >= size || !cells[tail].has_seq_id(seq_id)) {
+        return false;
+    }
+    const auto & cell = cells[tail];
+    if (cell.src < -1 || (cell.src >= 0 && (uint32_t) cell.src >= size)) return false;
+    const uint32_t plane = rs_idx[seq_id];
+    if (plane > n_rs_seq) return false;
+    const size_t src_row = (size_t) plane * size +
+            (cell.src >= 0 ? (uint32_t) cell.src : (uint32_t) tail);
+    if (src_row >= (size_t) size * (1 + n_rs_seq)) return false;
+
+    const uint32_t endian_probe = 1;
+    if (*(const uint8_t *) &endian_probe != 1) return false;
+    static std::atomic<size_t> accumulated_bytes{0};
+    constexpr size_t total_limit = size_t(512)*1024*1024;
+
+    // Manifest events are written by the server *before* this function is
+    // called. Each record is a different logical (checkpoint,layer,role) key.
+    char manifest_file[4096];
+    const int n_manifest = snprintf(manifest_file, sizeof(manifest_file),
+                                    "%s/manifest.jsonl", dir);
+    if (n_manifest < 0 || (size_t) n_manifest >= sizeof(manifest_file)) return false;
+    FILE * manifest = fopen(manifest_file, "ab");
+    if (!manifest) return false;
+
+    bool ok = true;
+    for (size_t il = 0; il < r_l.size() && ok; ++il) {
+        const ggml_tensor * parts[] = {r_l[il], s_l[il], p_l[il]};
+        const char * names[] = {"gdn_r", "gdn_s", "gdn_p"};
+        for (size_t kind = 0; kind < 3 && ok; ++kind) {
+            const ggml_tensor * t = parts[kind];
+            if (!t) continue;
+            if (t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16 &&
+                t->type != GGML_TYPE_BF16) { ok = false; break; }
+            if (t->ne[0] <= 0 || t->ne[1] <= 0 ||
+                src_row >= (size_t) t->ne[1] || !t->data ||
+                t->nb[0] != ggml_type_size(t->type)) { ok = false; break; }
+
+            const size_t bytes = ggml_row_size(t->type, t->ne[0]);
+            if (bytes == 0 || bytes > size_t(8)*1024*1024 ||
+                t->nb[1] == 0 || src_row > (SIZE_MAX - bytes)/t->nb[1]) {
+                ok = false; break;
+            }
+            const size_t offset = src_row * t->nb[1];
+            if (offset + bytes > ggml_nbytes(t) ||
+                accumulated_bytes.fetch_add(bytes) > total_limit - bytes) {
+                ok = false; break;
+            }
+            std::vector<uint8_t> row(bytes);
+            ggml_backend_tensor_get(t, row.data(), offset, bytes);
+
+            char filename[256];
+            const int used = snprintf(filename, sizeof(filename),
+                    "gdn-%u-%s-l%zu-%s.bin", step, phase, il, names[kind]);
+            if (used < 0 || (size_t) used >= sizeof(filename)) { ok = false; break; }
+            char fullpath[4096];
+            const int used_path = snprintf(fullpath, sizeof(fullpath), "%s/%s", dir, filename);
+            if (used_path < 0 || (size_t) used_path >= sizeof(fullpath)) { ok = false; break; }
+            FILE * output = fopen(fullpath, "wb");
+            if (!output) { ok = false; break; }
+            const bool wrote = fwrite(row.data(), 1, row.size(), output) == row.size();
+            const bool closed = fclose(output) == 0;
+            if (!wrote || !closed) { ok = false; break; }
+            if (fprintf(manifest,
+                "{\"kind\":\"tensor\",\"step\":%u,\"phase\":\"%s\",\"seq\":%d,"
+                "\"position\":%d,\"layer\":%zu,\"name\":\"%s\","
+                "\"dtype\":\"%s\",\"shape\":[%lld],\"path\":\"%s\","
+                "\"physical_cell\":%d,\"logical_source_row\":%zu,"
+                "\"rs_plane\":%u,\"logical_cell_pos\":%d}\n",
+                step, phase, seq_id, position, il, names[kind],
+                ggml_type_name(t->type), (long long) t->ne[0], filename,
+                tail, src_row, plane, cell.pos) < 0) {
+                ok = false; break;
+            }
+        }
+    }
+    if (fclose(manifest) != 0) ok = false;
+    return ok;
 }
 
 void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
