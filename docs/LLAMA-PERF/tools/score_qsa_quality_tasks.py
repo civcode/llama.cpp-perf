@@ -128,6 +128,7 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
     })
     details = []
     controls_unstable = 0
+    prompt_usage_mismatch = 0
     below_floor = 0
     unknown_usage = 0
     observed_output_changes = 0
@@ -140,9 +141,16 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         texts_stable = run["dense-a"]["text"] == run["dense-b"]["text"]
         finishes_stable = run["dense-a"]["finish_reason"] == run["dense-b"]["finish_reason"]
         counts = [run[name]["prompt_tokens"] for name in CONDITIONS]
-        same_counts = (all(n is None for n in counts)
-                       or all(n is not None for n in counts) and len(set(counts)) == 1)
-        stable = texts_stable and finishes_stable and same_counts
+        dense_counts = counts[:2]
+        same_dense_counts = (all(n is None for n in dense_counts) or
+                             all(n is not None for n in dense_counts) and
+                             dense_counts[0] == dense_counts[1])
+        stable = texts_stable and finishes_stable and same_dense_counts
+        # Tokenization mismatches between dense and sparse are a separate
+        # confounder, never a *dense repeat* instability.
+        same_all_counts = (all(n is None for n in counts) or
+                           all(n is not None for n in counts) and len(set(counts)) == 1)
+        prompt_usage_mismatch += int(not same_all_counts)
         category = categories[task["kind"]]
         category["tasks"] += 1
         for name, label in (("dense-a", "dense_a_pass"), ("dense-b", "dense_b_pass"),
@@ -159,7 +167,9 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
             eligible_length = None
             unknown_usage += 1
         classification = "control_unstable"
-        if stable:
+        if stable and not same_all_counts:
+            classification = "prompt_usage_mismatch"
+        elif stable:
             if scored["dense-a"][0] and not scored["sparse"][0]:
                 classification = "sparse_regression"
                 category["sparse_regressions"] += 1
@@ -173,6 +183,7 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         details.append({
             "id": key, "kind": task["kind"],
             "classification": classification, "dense_repeat_stable": stable,
+            "prompt_usage_aligned": same_all_counts,
             "dense_a": {"pass": scored["dense-a"][0], "reason": scored["dense-a"][1]},
             "dense_b": {"pass": scored["dense-b"][0], "reason": scored["dense-b"][1]},
             "sparse": {"pass": scored["sparse"][0], "reason": scored["sparse"][1]},
@@ -189,6 +200,7 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         "production_promotion": "NO_GO",
         "tasks": cases,
         "dense_repeat_unstable_tasks": controls_unstable,
+        "prompt_usage_mismatch_tasks": prompt_usage_mismatch,
         "sparse_changed_output_tasks": observed_output_changes,
         "tasks_below_context_floor": below_floor,
         "tasks_without_complete_usage": unknown_usage,
@@ -233,6 +245,7 @@ def main() -> int:
         "dense_b_pass": report["dense_b_pass"],
         "sparse_pass": report["sparse_pass"],
         "dense_repeat_unstable_tasks": report["dense_repeat_unstable_tasks"],
+        "prompt_usage_mismatch_tasks": report["prompt_usage_mismatch_tasks"],
         "sparse_regressions": report["sparse_regressions_with_stable_control"],
         "sparse_improvements": report["sparse_improvements_with_stable_control"],
         "below_context_floor": report["tasks_below_context_floor"],
