@@ -7,10 +7,45 @@
 #include "fattn-wmma-q4-tune.h"
 #include "fattn-sparse-q4-tune.h"
 #include "fattn-sparse-q4-gqa12-tune.h"
+#include "fattn-sparse-q4-gqa12-layer-filter.h"
 
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
+
+#if defined(GGML_USE_HIP)
+// Diagnostic-only layer isolation. The default is the original experimental
+// GQA12 selector (no layer restriction); this does not enable sparse by itself.
+// Stable layer names require the opt-in graph-disabling QSA mask audit. The
+// caller uses this identical guard in both supported() and launch selection.
+static const char * ggml_cuda_qsa_sparse_gqa12_layer_option(const ggml_tensor * dst) {
+    const char * sparse_enabled = std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12");
+    const char * filter = std::getenv("GGML_HIP_QSA_GQA12_LAYER_FILTER");
+    if (filter == nullptr) {
+        return sparse_enabled;
+    }
+    if (sparse_enabled == nullptr || strcmp(sparse_enabled, "1") != 0 ||
+            std::getenv("GGML_QSA_MASK_AUDIT") == nullptr) {
+        GGML_ABORT("GGML_HIP_QSA_GQA12_LAYER_FILTER requires experimental GQA12=1 and GGML_QSA_MASK_AUDIT");
+    }
+
+    const ggml_tensor * q = dst->src[0];
+    const ggml_tensor * k = dst->src[1];
+    // Ignore other attention shapes, which are ineligible for sparse Q4 in
+    // the existing selector and may not have stable QSA layer names.
+    if (q == nullptr || k == nullptr || k->ne[2] <= 0 ||
+            q->ne[1] != 4 || q->ne[2] / k->ne[2] != 12 ||
+            ggml_get_op_params_i32(dst, 4) <= 0) {
+        return nullptr;
+    }
+    const auto decision = ggml_cuda_qsa_gqa12_layer_filter::evaluate(filter, dst->name);
+    if (!decision.valid) {
+        GGML_ABORT("invalid GGML_HIP_QSA_GQA12_LAYER_FILTER or missing audited layer name: %s at %s",
+                   filter, dst->name);
+    }
+    return decision.selected ? sparse_enabled : nullptr;
+}
+#endif // GGML_USE_HIP
 
 #if !defined(GGML_USE_MUSA)
 
@@ -195,7 +230,7 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
             Q->ne[1], Q->ne[3], Q->ne[2]/K->ne[2], gqa_opt,
             K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
             mask->type == GGML_TYPE_F16, K->ne[1], n_kv_max,
-            std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12"));
+            ggml_cuda_qsa_sparse_gqa12_layer_option(dst));
     }
 #endif
     if (ncols1 == 4 && ncols2 == 4 && !sparse_q4) {
@@ -747,7 +782,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             gqa_opt_applies,
             K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
             mask != nullptr && mask->type == GGML_TYPE_F16, K->ne[1],
-            n_kv_max_sparse, std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12"));
+            n_kv_max_sparse, ggml_cuda_qsa_sparse_gqa12_layer_option(dst));
     if (sparse_q4_gqa4 || sparse_q4_gqa12) {
         return BEST_FATTN_KERNEL_MMA_F16;
     }
