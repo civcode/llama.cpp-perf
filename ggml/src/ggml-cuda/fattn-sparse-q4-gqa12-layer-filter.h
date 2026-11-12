@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstring>
+
 // CPU-testable grammar for a diagnostic-only, explicit HIP QSA GQA12 layer
 // selector. Production sparse enablement is unchanged unless the caller opts
 // in with BOTH the existing experimental sparse flag and mask audit.
@@ -40,15 +42,12 @@ static inline decision evaluate(const char * filter, const char * tensor_name) {
     if (filter == nullptr) {
         return {true, true};
     }
-    constexpr const char * only   = "only:";
-    constexpr const char * except = "except:";
     const char * digits = nullptr;
     bool include_only = false;
-    if (filter[0]=='o' && filter[1]=='n' && filter[2]=='l' && filter[3]=='y' && filter[4]==':') {
+    if (std::strncmp(filter, "only:", 5) == 0) {
         digits = filter + 5;
         include_only = true;
-    } else if (filter[0]=='e' && filter[1]=='x' && filter[2]=='c' &&
-               filter[3]=='e' && filter[4]=='p' && filter[5]=='t' && filter[6]==':') {
+    } else if (std::strncmp(filter, "except:", 7) == 0) {
         digits = filter + 7;
     } else {
         return {false, false};
