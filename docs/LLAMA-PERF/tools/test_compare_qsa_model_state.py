@@ -52,6 +52,7 @@ def sample_manifest(root: Path, label: str, *, tweak=None, token_override=None,
             "layer": -1 if name == "logits" else 11,
             "name": name, "dtype": dtype, "shape": [len(vals)],
             "path": file.name, "physical_cell": cell, "rs_plane": 0,
+            "logical_cell_pos": 33024,
         })
     if duplicate:
         rows.append(rows[1])
@@ -112,6 +113,14 @@ class CompareModelStateTest(unittest.TestCase):
     def test_duplicate_tensor_rejected(self):
         a = sample_manifest(self.root, "a", duplicate=True)
         with self.assertRaisesRegex(ValueError, "duplicate tensor"):
+            read_manifest(a)
+
+    def test_missing_recurrent_logical_cell_position_is_rejected(self):
+        a = sample_manifest(self.root, "a")
+        records = [json.loads(line) for line in a.read_text().splitlines()]
+        del records[2]["logical_cell_pos"]
+        a.write_text("".join(json.dumps(row) + "\n" for row in records))
+        with self.assertRaisesRegex(ValueError, "lacks logical cell position"):
             read_manifest(a)
 
     def test_recurrent_logical_cell_position_must_align(self):

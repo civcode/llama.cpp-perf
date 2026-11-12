@@ -96,6 +96,8 @@ def read_manifest(path: Path) -> tuple[dict, dict]:
                         raise ValueError("invalid tensor identity")
                     if record["name"] not in ("logits", "gdn_r", "gdn_s", "gdn_p"):
                         raise ValueError(f"unsupported tensor role {record['name']}")
+                    if record["name"].startswith("gdn_") and not isinstance(record.get("logical_cell_pos"), int):
+                        raise ValueError("recurrent snapshot lacks logical cell position")
                     shape = record["shape"]
                     if (not isinstance(shape, list) or not 1 <= len(shape) <= 4
                             or any(not isinstance(n, int) or n <= 0 for n in shape)):

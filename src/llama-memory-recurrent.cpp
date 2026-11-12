@@ -819,10 +819,29 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
             (cell.src >= 0 ? (uint32_t) cell.src : (uint32_t) tail);
     if (src_row >= (size_t) size * (1 + n_rs_seq)) return false;
 
+    // Independently ask the recurrent serializer which tensor ranges represent
+    // this sequence. Reject multi-cell sequences or any disagreement rather
+    // than silently treating a physical cell as the current logical state.
+    struct range_writer : llama_io_write_i {
+        std::map<const ggml_tensor *, std::pair<size_t, size_t>> ranges;
+        bool valid = true;
+        size_t count = 0;
+        void write(const void *, size_t n) override { count += n; }
+        void write_tensor(ggml_tensor * t, size_t off, size_t n) override {
+            valid = valid && ranges.emplace(t, std::make_pair(off, n)).second;
+            count += n;
+        }
+        size_t n_bytes() override { return count; }
+    } reference;
+    state_write(reference, seq_id, 0);
+    if (!reference.valid || reference.ranges.empty()) return false;
+
     const uint32_t endian_probe = 1;
     if (*(const uint8_t *) &endian_probe != 1) return false;
     static std::atomic<size_t> accumulated_bytes{0};
-    constexpr size_t total_limit = size_t(512)*1024*1024;
+    // Full multi-layer states are large: 16 groups x 3 phases of this model
+    // exceed 512 MiB. Still bounded and fail closed before each transfer.
+    constexpr size_t total_limit = size_t(8)*1024*1024*1024;
 
     // Manifest events are written by the server *before* this function is
     // called. Each record is a different logical (checkpoint,layer,role) key.
@@ -853,6 +872,11 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
                 ok = false; break;
             }
             const size_t offset = src_row * t->nb[1];
+            const auto ref = reference.ranges.find(t);
+            if (ref == reference.ranges.end() || ref->second != std::make_pair(offset, bytes)) {
+                ok = false; break;
+            }
+            reference.ranges.erase(ref);
             if (offset + bytes > ggml_nbytes(t) ||
                 accumulated_bytes.fetch_add(bytes) > total_limit - bytes) {
                 ok = false; break;
@@ -887,7 +911,7 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
         }
     }
     if (fclose(manifest) != 0) ok = false;
-    return ok && wrote_any;
+    return ok && wrote_any && reference.ranges.empty();
 }
 
 void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {

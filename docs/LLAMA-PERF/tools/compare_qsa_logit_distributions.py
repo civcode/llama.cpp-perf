@@ -53,11 +53,13 @@ def row_metrics(dense, other) -> dict:
             kl_ab += p*(logp-logq)
         if q > 0:
             kl_ba += q*(logq-logp)
-        midpoint = (p+q)*0.5
+        # Work in log space: (p + q)/2 can underflow even when p or q
+        # remains a nonzero subnormal float.
+        log_midpoint = max(logp, logq) + math.log1p(math.exp(-abs(logp-logq))) - math.log(2.0)
         if p > 0:
-            js += 0.5*p*math.log(p/midpoint)
+            js += 0.5*p*(logp-log_midpoint)
         if q > 0:
-            js += 0.5*q*math.log(q/midpoint)
+            js += 0.5*q*(logq-log_midpoint)
         centered_max_abs = max(centered_max_abs, abs((x-y)-shift))
 
     return {

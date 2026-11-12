@@ -72,6 +72,10 @@ class DistributionsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max rows"):
             compare(a, b, max_rows=0)  # Invalid bound itself fails closed.
 
+    def test_subnormal_probability_midpoint(self):
+        result = row_metrics([0.0, -744.4], [0.0, -1000.0])
+        self.assertGreaterEqual(result["js_nats"], 0.0)
+
     def test_reject_nonfinite_logits(self):
         a = make(self.root, "a")
         b = make(self.root, "b", logits=[2.5, float("nan"), 0.0, -1.0])
