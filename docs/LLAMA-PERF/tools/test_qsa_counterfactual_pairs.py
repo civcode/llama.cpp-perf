@@ -114,6 +114,9 @@ class CounterfactualPairTests(unittest.TestCase):
         self.assertEqual(r["baseline_stably_solved_pairs"], 6)
         self.assertEqual(r["sparse_solved_pairs"], 5)
         self.assertFalse(r["per_pair"][0]["variants"][0]["comparable"])
+        self.assertEqual(r["sparse_pair_regressions"], 0)
+        self.assertIsNone(r["per_pair"][0]["sparse_pair_solved"])
+        self.assertFalse(r["per_pair"][0]["comparable_pair"])
 
     def test_modified_second_record_is_rejected(self):
         bad = json.loads(json.dumps(self.tasks))
