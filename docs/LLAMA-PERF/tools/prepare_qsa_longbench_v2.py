@@ -105,8 +105,13 @@ def make_manifest(source: Path, seed: int = 20261115, limit: int = 12,
         answer = row.get("answer")
         if not isinstance(answer, str) or answer not in CHOICES:
             raise ValueError(f"invalid MCQ answer at {sid}")
-        if not _valid_text(row.get("context"), 1024 * 1024):
-            raise ValueError(f"missing/oversized context for {sid}")
+        if not isinstance(row.get("context"), str) or not row["context"]:
+            raise ValueError(f"missing context for {sid}")
+        # Large source examples are expected in LongBench v2 (some exceed
+        # a million bytes); skip without materializing a prompt, do not
+        # fail the entire dataset selection.
+        if len(row["context"].encode("utf-8")) > max_prompt_bytes:
+            continue
         if not _valid_text(row.get("question"), 8192):
             raise ValueError(f"missing/oversized question for {sid}")
         if any(not _valid_text(row.get("choice_" + c), 8192) for c in CHOICES):
