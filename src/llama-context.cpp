@@ -7,6 +7,9 @@
 #include "llama-batch.h"
 #include "llama-io.h"
 #include "llama-memory.h"
+#include "llama-memory-hybrid.h"
+#include "llama-memory-recurrent.h"
+#include "llama-qsa-debug.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-moe-cache.h"
@@ -5153,6 +5156,24 @@ int32_t llama_encode(
     }
 
     return ret;
+}
+
+// Internal diagnostic bridge used by the server's opt-in logits/GDN trace.
+// Do not route through state_seq_get_data: hybrid state serialization also
+// includes a huge long-context KV cache, whereas only recurrent rows are needed.
+extern "C" LLAMA_API bool llama_qsa_debug_dump_gdn(
+        llama_context * ctx, llama_seq_id seq_id, const char * dir,
+        unsigned step, const char * phase, llama_pos position) {
+    if (!ctx || !dir || !phase) return false;
+    try {
+        ctx->synchronize();
+        auto * hybrid = dynamic_cast<llama_memory_hybrid *>(ctx->get_memory());
+        if (!hybrid || !hybrid->get_mem_recr()) return false;
+        return hybrid->get_mem_recr()->qsa_debug_dump_state(seq_id, dir, step, phase, position);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: GDN diagnostic snapshot failed: %s\n", __func__, err.what());
+        return false;
+    }
 }
 
 int32_t llama_decode(
