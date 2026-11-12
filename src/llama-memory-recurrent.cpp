@@ -834,6 +834,7 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
     if (!manifest) return false;
 
     bool ok = true;
+    bool wrote_any = false;
     for (size_t il = 0; il < r_l.size() && ok; ++il) {
         const ggml_tensor * parts[] = {r_l[il], s_l[il], p_l[il]};
         const char * names[] = {"gdn_r", "gdn_s", "gdn_p"};
@@ -871,6 +872,7 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
             const bool wrote = fwrite(row.data(), 1, row.size(), output) == row.size();
             const bool closed = fclose(output) == 0;
             if (!wrote || !closed) { ok = false; break; }
+            wrote_any = true;
             if (fprintf(manifest,
                 "{\"kind\":\"tensor\",\"step\":%u,\"phase\":\"%s\",\"seq\":%d,"
                 "\"position\":%d,\"layer\":%zu,\"name\":\"%s\","
@@ -885,7 +887,7 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
         }
     }
     if (fclose(manifest) != 0) ok = false;
-    return ok;
+    return ok && wrote_any;
 }
 
 void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
