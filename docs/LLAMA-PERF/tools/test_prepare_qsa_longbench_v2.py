@@ -9,7 +9,7 @@ import unittest
 
 from prepare_qsa_longbench_v2 import make_manifest
 from run_qsa_quality_tasks import load_tasks, sha256
-from score_qsa_quality_tasks import grade
+from score_qsa_quality_tasks import grade, score
 
 
 def source_row(i: int, domain="Single-Document QA", difficulty="easy",
@@ -69,6 +69,40 @@ class LongBenchV2AdapterTests(unittest.TestCase):
             self.assertEqual(t["max_tokens"], 32)
             self.assertTrue(grade(t, "The correct answer is (" +
                                   t["expected"]["value"] + ")")[0])
+
+    def test_benchmark_scoring_and_domain_regressions(self):
+        manifest = make_manifest(self.source, seed=1, limit=4,
+                                 min_context_bytes=100, max_prompt_bytes=4000)
+        path = self.root / "tasks.json"
+        path.write_text(json.dumps(manifest))
+        digest, tasks = load_tasks(path)
+        runs = {}
+        for condition in ("dense-a", "dense-b", "sparse"):
+            records = []
+            for i, t in enumerate(tasks):
+                choice = t["expected"]["value"]
+                if condition == "sparse" and i == 0:
+                    choice = next(c for c in ("A", "B", "C", "D") if c != choice)
+                records.append({
+                    "id": t["id"], "kind": t["kind"], "condition": condition,
+                    "task_manifest_sha256": digest,
+                    "prompt_sha256": sha256(t["prompt"].encode("utf-8")),
+                    "requested_max_tokens": t["max_tokens"],
+                    "sampling": {"temperature": 0.0, "top_p": 1.0, "seed": 42},
+                    "text": f"The correct answer is ({choice})",
+                    "finish_reason": "stop", "prompt_tokens": 22000,
+                    "completion_tokens": 8,
+                })
+            target = self.root / f"{condition}.jsonl"
+            target.write_text("".join(json.dumps(r)+"\\n" for r in records))
+            runs[condition] = target
+        result = score(path, runs["dense-a"], runs["dense-b"], runs["sparse"])
+        self.assertEqual(result["dense_a_pass"], 4)
+        self.assertEqual(result["sparse_pass"], 3)
+        self.assertEqual(result["sparse_regressions_with_stable_control"], 1)
+        self.assertEqual(result["per_difficulty"]["benchmark_easy"]["tasks"], 4)
+        self.assertEqual(sum(x["sparse_regressions"] for x in
+                             result["per_benchmark_domain"].values()), 1)
 
     def test_gold_never_inserted_as_answer_hint(self):
         manifest = make_manifest(self.source, seed=2, limit=3,
