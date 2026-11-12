@@ -81,6 +81,8 @@ class ReplayReferenceTest(unittest.TestCase):
         result = compare(a, b)
         self.assertGreater(result["sparse_vs_fp64_reference"]["max_abs"], 0.009)
         self.assertLess(result["dense_vs_fp64_reference"]["max_abs"], 1e-6)
+        self.assertEqual(result["sparse_vs_dense"]["first_nonzero_at_stream_query_head_feature"], (0, 2, 3, 1))
+        self.assertEqual(len(result["sparse_vs_fp64_reference"]["per_head"]), 4)
 
     def test_reject_mismatched_qkv(self):
         a = write_run(self.root, "dense")

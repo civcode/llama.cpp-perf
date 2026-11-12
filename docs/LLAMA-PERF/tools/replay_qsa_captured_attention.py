@@ -101,7 +101,7 @@ def spans(record: dict) -> tuple[tuple[int, ...], tuple[int, ...], np.dtype]:
         dtype = np.dtype("<f2")
     else:
         raise ValueError(f"unsupported tensor type: {record['type']}")
-    if nb[0] != dtype.itemsize:
+    if nb[0] < dtype.itemsize or any(stride % dtype.itemsize for stride in nb):
         raise ValueError("unexpected element stride")
     return ne, nb, dtype
 
@@ -203,10 +203,15 @@ def error_summary(expected: np.ndarray, actual: np.ndarray) -> dict:
             "nmse_over_reference_energy": float(np.sum(err*err) / denom),
         })
     loc = tuple(int(x) for x in np.unravel_index(int(np.argmax(np.abs(diff))), diff.shape))
+    changed = np.flatnonzero(diff)
+    first = tuple(int(x) for x in np.unravel_index(int(changed[0]), diff.shape)) if changed.size else None
     return {
         "max_abs": float(np.max(np.abs(diff))),
         "nmse_over_reference_energy": float(np.sum(sq) / max(sum_signal, 1e-30)),
+        "first_nonzero_at_stream_query_head_feature": first,
+        "first_nonzero_error": float(diff[first]) if first is not None else None,
         "max_error_at_stream_query_head_feature": loc,
+        "per_head": head_summaries,
         "worst_heads": sorted(head_summaries, key=lambda x: x["nmse_over_reference_energy"], reverse=True)[:8],
     }
 
