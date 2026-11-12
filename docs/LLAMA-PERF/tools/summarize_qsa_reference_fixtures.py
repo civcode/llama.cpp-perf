@@ -31,7 +31,7 @@ import json
 import math
 from pathlib import Path
 
-from compare_qsa_model_state import compare as compare_state
+from compare_qsa_model_state import compare as compare_state, read_manifest
 from compare_qsa_reference_nll import compare as compare_nll
 
 
@@ -44,6 +44,29 @@ def _sha256(path: Path, max_bytes: int = 1024 * 1024) -> str:
     if not path.is_file() or path.stat().st_size == 0 or path.stat().st_size > max_bytes:
         raise ValueError(f"missing, empty or oversized reference input: {path}")
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _require_identical_dense_files(a: Path, b: Path) -> int:
+    # The generic numerical comparator detects changed float values; this
+    # additional raw-byte check also distinguishes +0 from -0 and changes
+    # in signed-zero bit patterns. Never infer bitwise equality from NLL.
+    _, tensors_a = read_manifest(a)
+    _, tensors_b = read_manifest(b)
+    if tensors_a.keys() != tensors_b.keys() or not tensors_a:
+        raise ValueError("dense control tensor keys differ")
+    if any(key[-1] != "logits" for key in tensors_a):
+        raise ValueError("reference runs must contain only logits tensors")
+    for key in tensors_a:
+        ra, rb = tensors_a[key], tensors_b[key]
+        if ra["shape"] != rb["shape"] or ra["dtype"] != rb["dtype"]:
+            raise ValueError(f"dense control dtype/shape mismatch at {key}")
+        if ra["dtype"] != "f32" or len(ra["shape"]) != 1:
+            raise ValueError(f"not full F32 logits row in dense controls at {key}")
+        file_a = _resolve(a, ra["path"])
+        file_b = _resolve(b, rb["path"])
+        if _sha256(file_a, max_bytes=8*1024*1024) != _sha256(file_b, max_bytes=8*1024*1024):
+            raise ValueError(f"dense control raw logits differ at {key}")
+    return len(tensors_a)
 
 
 def summarize(manifest: Path, max_rows: int = 64) -> dict:
@@ -98,12 +121,13 @@ def summarize(manifest: Path, max_rows: int = 64) -> dict:
         control = compare_state(logs["dense_a"], logs["dense_b"])
         if control["changed_snapshots"] != 0:
             raise ValueError(f"dense-repeat logits disagree for {fid}")
-        if control["tensor_snapshots"] > max_rows:
-            raise ValueError(f"control row count exceeds --max-rows for {fid}")
+        control_rows = _require_identical_dense_files(logs["dense_a"], logs["dense_b"])
+        if control_rows < 4 or control_rows % 4 != 0 or control_rows > max_rows:
+            raise ValueError(f"control rows must be Q=4 groups within --max-rows for {fid}")
 
         result = compare_nll(logs["dense_a"], logs["sparse"],
                              ref_files[0], max_rows=max_rows, max_examples=0)
-        if result["rows"] != control["tensor_snapshots"]:
+        if result["rows"] != control_rows or result["rows"] != control["tensor_snapshots"]:
             raise ValueError(f"incomplete or additional logits tensors for {fid}")
         rows = result["rows"]
         delta = result["mean_sparse_minus_dense_nll_nats"]
