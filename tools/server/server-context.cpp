@@ -5225,8 +5225,11 @@ private:
             SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
 
             slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
-            gdn_snapshot(n_accepted == n_draft ? "post_accept" : "post_rollback",
-                    ids, n_accepted != n_draft);
+            // n_accepted is adjusted above for replay statistics; it is not
+            // the number of verification tokens actually rolled back.
+            const bool gdn_did_rollback = ids.size() - 1 != n_draft;
+            gdn_snapshot(gdn_did_rollback ? "post_rollback" : "post_accept",
+                    ids, gdn_did_rollback);
             if (observe_gdn) ++qsa_gdn_groups;
 
             for (size_t i = 0; i < ids.size(); ++i) {

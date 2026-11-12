@@ -93,8 +93,8 @@ def audit(path: Path) -> dict:
         mode = event.get("rollback_mode", "unrecorded")
         if mode not in ("none", "snapshot", "checkpoint_restore", "unrecorded"):
             raise ValueError(f"unknown rollback mode in {event_key}: {mode}")
-        if mode != "unrecorded" and mode != "none" and not event["rollback"]:
-            raise ValueError(f"rollback mode without rollback in {event_key}")
+        if mode != "unrecorded" and (mode != "none") != event["rollback"]:
+            raise ValueError(f"rollback mode inconsistent with rollback in {event_key}")
         modes[(event_key[1], mode)] += 1
 
     return {

@@ -54,7 +54,7 @@ class GdnCoverageTest(unittest.TestCase):
         self.assertEqual(r["nontrivial_source_indirection_rows"], 0)
         self.assertEqual(r["nonzero_rollback_plane_rows"], 0)
 
-    def test_real_source_cell_indirection_and_pending_snapshot(self):
+    def test_synthetic_source_cell_indirection_and_pending_snapshot(self):
         r = audit(write_trace(self.root, "source", physical_cell=1,
                               source_cell=3, plane=2, mode="snapshot"))
         self.assertEqual(r["nontrivial_source_indirection_rows"], 2)
@@ -71,6 +71,14 @@ class GdnCoverageTest(unittest.TestCase):
     def test_row_formula_mismatch_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "incorrect logical source row"):
             audit(write_trace(self.root, "bad", bad_row=True))
+
+    def test_rollback_mode_must_match_decision(self):
+        manifest = write_trace(self.root, "bad_mode", mode="snapshot")
+        records = [json.loads(line) for line in manifest.read_text().splitlines()]
+        records[0]["rollback_mode"] = "none"
+        manifest.write_text("".join(json.dumps(r) + "\n" for r in records))
+        with self.assertRaisesRegex(ValueError, "rollback mode inconsistent"):
+            audit(manifest)
 
     def test_missing_recurrent_s_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "incomplete R/S"):
