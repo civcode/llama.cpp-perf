@@ -12,7 +12,7 @@ from audit_qsa_gdn_coverage import audit
 def write_trace(root: Path, name: str, *,
                 physical_cell=0, source_cell=0, plane=0, cache_size=4,
                 mode="none", bad_row=False, logical_pos=10,
-                omit_s=False):
+                omit_s=False, staged_source=-1):
     directory = root / name
     directory.mkdir()
     step = 0
@@ -31,7 +31,7 @@ def write_trace(root: Path, name: str, *,
             "seq": 0, "position": 10, "layer": 12, "name": name,
             "dtype": "f32", "shape": [2], "path": file.name,
             "physical_cell": physical_cell, "source_cell": source_cell,
-            "cache_size": cache_size,
+            "staged_source_cell": staged_source, "cache_size": cache_size,
             "logical_source_row": plane*cache_size +
                 (source_cell if source_cell >= 0 else physical_cell) +
                 (1 if bad_row else 0),
@@ -61,6 +61,14 @@ class GdnCoverageTest(unittest.TestCase):
         self.assertEqual(r["nonzero_rollback_plane_rows"], 2)
         self.assertEqual(r["post_rollback_snapshot_events"], 1)
         self.assertEqual(r["source_indirection_examples"][0]["logical_source_row"], 11)
+
+    def test_staged_source_is_not_a_serialized_source_row(self):
+        r = audit(write_trace(self.root, "staged",
+                              physical_cell=1, source_cell=1, staged_source=3))
+        self.assertEqual(r["nontrivial_source_indirection_rows"], 0)
+        self.assertEqual(r["nontrivial_staged_source_rows"], 2)
+        self.assertEqual(r["staged_source_examples"][0]["source_cell"], 1)
+        self.assertEqual(r["staged_source_examples"][0]["staged_source_cell"], 3)
 
     def test_checkpoint_restore_tag_is_distinguished(self):
         r = audit(write_trace(self.root, "restore",
