@@ -145,10 +145,11 @@ def _identical_capture_inputs(captures: list[dict]) -> tuple[dict, np.ndarray, d
                 if primary[field] != other[field]:
                     raise ValueError(f"QKV metadata mismatch for {name}:{field}")
         paths = [resolved(c["inputs"][name]["path"], Path(c["log"])) for c in captures]
+        sizes = [path.stat().st_size for path in paths]
+        if any(size <= 0 for size in sizes) or total + sum(sizes) > MAX_CAPTURE_BYTES:
+            raise ValueError("total captured raw tensor bytes exceed 512 MiB or contain empty input")
+        total += sum(sizes)
         blobs = [path.read_bytes() for path in paths]
-        total += sum(len(x) for x in blobs)
-        if total > MAX_CAPTURE_BYTES:
-            raise ValueError("total captured raw tensor bytes exceed 512 MiB")
         if blobs[0] != blobs[1] or blobs[0] != blobs[2]:
             raise ValueError(f"QKV {name} raw span bytes differ across captures")
         qkv[name] = read_tensor(primary, Path(baseline["log"]))
