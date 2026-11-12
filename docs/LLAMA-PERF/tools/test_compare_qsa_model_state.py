@@ -114,6 +114,36 @@ class CompareModelStateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate tensor"):
             read_manifest(a)
 
+    def test_recurrent_logical_cell_position_must_align(self):
+        a = sample_manifest(self.root, "a")
+        b = sample_manifest(self.root, "b")
+        for path, logical_pos in ((a, 123), (b, 124)):
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            for record in records:
+                if record["kind"] == "tensor":
+                    record["logical_cell_pos"] = logical_pos
+            path.write_text("".join(json.dumps(row) + "\n" for row in records))
+        with self.assertRaisesRegex(ValueError, "logical recurrent cell position"):
+            compare(a, b)
+
+    def test_pre_verify_and_post_rollback_phases_are_distinct(self):
+        a = sample_manifest(self.root, "a")
+        b = sample_manifest(self.root, "b")
+        for manifest in (a, b):
+            records = [json.loads(line) for line in manifest.read_text().splitlines()]
+            event = dict(records[0])
+            event.update(step=1, phase="post_rollback", accepted=[42], rollback=True)
+            tensor = dict(records[1])
+            tensor.update(step=1, phase="post_rollback", path="rollback.bin",
+                          name="gdn_r", layer=11, logical_cell_pos=33024,
+                          rs_plane=1)
+            (manifest.parent / "rollback.bin").write_bytes((manifest.parent / "logits.bin").read_bytes())
+            records.extend([event, tensor])
+            manifest.write_text("".join(json.dumps(row) + "\n" for row in records))
+        result = compare(a, b)
+        self.assertEqual(result["logical_events"], 2)
+        self.assertEqual(result["changed_snapshots"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
