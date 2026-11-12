@@ -27,8 +27,7 @@ def source_row(i: int, domain="Single-Document QA", difficulty="easy",
         "choice_D": "The fourth possibility",
         "answer": ("A", "B", "C", "D")[i % 4],
         "context": (f"Reference document number {i}. " +
-                    "Source text for deterministic testing only. " * 100)
-                   [:context_size],
+                    "Source text for deterministic testing only. " * 100)[:context_size],
     }
 
 
@@ -121,7 +120,7 @@ class LongBenchV2AdapterTests(unittest.TestCase):
     def test_do_not_silently_truncate_to_meet_size(self):
         with self.assertRaisesRegex(ValueError, "only .* eligible"):
             make_manifest(self.source, limit=2,
-                          min_context_bytes=1000, max_prompt_bytes=200)
+                          min_context_bytes=100, max_prompt_bytes=200)
 
     def test_scoring_accepts_unambiguous_choice_forms(self):
         for output in ("B", "(B)", "B.", "Answer: B",
