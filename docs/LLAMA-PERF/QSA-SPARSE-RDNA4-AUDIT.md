@@ -153,6 +153,27 @@ Use `python3 docs/LLAMA-PERF/tools/compare_qsa_logit_distributions.py dense-A-lo
 
 **Caution:** Report 0019 checks actual tensor ranges against recurrent-only serialization and dense A/B repeat stability, including pending rollback planes and later verification. It does not validate live `cell.src` indirection or checkpoint restore, and the observer covers only one text slot and the first 16 verification groups. Production mixed sequences and GPU graph replay remain unverified.
 
+## Iteration 0019 results and targeted source-row/restore coverage
+
+[Report 0019](../../.ai/reports/report-0019.md) verified 16 naturally aligned 32K MTP verification groups on each of dense A, dense B and sparse. Each process captured 48 GDN checkpoints (3,504 R/S/P rows) over both accepted and rejected/rollback paths; dense repeats matched all rows bytewise while sparse differed in 2,592/3,504 rows, including 1,296/1,728 R and 1,296/1,728 S rows (P unchanged 0/48). First changed GDN value was at layer 12 pre-verification, *before* first sampling. Maximum dense-energy row NMSE was 0.00195039 (R), 0.00154951 (S). Dense A/B logits were identical; dense/sparse full-vocabulary logits had 0/64 top-1 flips, 5/64 changed top-5 sets, max KL(dense||sparse) 0.0106312 nats, max JS 0.00260841 nats. The full-softmax probability of the same top-ranked token changed from 0.5710 to 0.6347 at one checkpoint. **No justified acceptance criterion or model numerical equivalence has been established. No production promotion or 512-token performance A/B is allowed on this evidence.**
+
+The observer was independently cross-checked against the *range-selection* metadata requested by the recurrent serializer, including active rollback snapshot planes 2/3 and the normal plane 0, over all 36 R, 36 S and one P layers per checkpoint. But **all live source rows were physical cell 0**, so nontrivial `cell.src` indirection and the checkpoint-restore/replay path remain untested. This is an observer-validation gap distinct from the already-observed sparse numerical differences.
+
+Chat AI then added minimal **disabled-by-default metadata** to avoid repeated huge captures for coverage discovery:
+
+- Each `LLAMA_QSA_GDN_DIR` GDN tensor record now includes `source_cell` (actual `cell.src`, possibly -1), `cache_size` (recurrent memory cells), plus the existing `physical_cell`, `logical_source_row`, `rs_plane` and `logical_cell_pos`.
+- Each GDN checkpoint event now includes `rollback_mode`: `none`, `snapshot` or `checkpoint_restore`, determined by the target's existing rollback decision. **This does not change** sampling, acceptance, rollback semantics or state.
+- New host-only `docs/LLAMA-PERF/tools/audit_qsa_gdn_coverage.py` checks every recorded tensor's `logical_source_row = rs_plane * cache_size + (source_cell >= 0 ? source_cell : physical_cell)`, consistency across layers within each checkpoint, completeness of R/S roles and the actual observed source/rollback coverage. It can fail with exit 2 when `--require-source-indirection` or `--require-checkpoint-restore` is requested. Its synthetic test `test_audit_qsa_gdn_coverage.py` covers both source indirection, rollback types and malformed data.
+- These new fields **are not present** in Iteration 0019's old manifests. Use new small, bounded targeted runs for this audit; do not relabel old captures as proving the missing cases. Metadata and tests are not yet compiled or executed on the local agent's machine.
+
+For new GDN captures:
+```text
+python3 docs/LLAMA-PERF/tools/test_audit_qsa_gdn_coverage.py
+python3 docs/LLAMA-PERF/tools/audit_qsa_gdn_coverage.py   /home/chris/workspace/llama-perf-results/iteration-0020/<run>/manifest.jsonl
+```
+
+**The audit verifies row *selection metadata*, not actual bytes.** Independently compare the chosen row bytes with a bounded recurrent-only serializer on an actual nontrivial source-cell and checkpoint-restore fixture before claiming those cases validated. Use a small 1–2-group test or temporary local fixture, not a repeated 5.3-GiB full-context snapshot. See Handoff 0020.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
