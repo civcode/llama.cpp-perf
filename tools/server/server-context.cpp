@@ -5004,7 +5004,18 @@ private:
             static unsigned qsa_gdn_groups = 0;
             static unsigned qsa_gdn_step = 0;
             const char * gdn_dir = std::getenv("LLAMA_QSA_GDN_DIR");
-            const bool observe_gdn = gdn_dir && qsa_gdn_groups < 16;
+            unsigned gdn_group_limit = 16;
+            if (gdn_dir) {
+                if (const char * text = std::getenv("LLAMA_QSA_GDN_GROUP_LIMIT")) {
+                    char * end = nullptr;
+                    const long parsed = std::strtol(text, &end, 10);
+                    if (!end || *end != '\0' || parsed < 1 || parsed > 16) {
+                        GGML_ABORT("LLAMA_QSA_GDN_GROUP_LIMIT must be 1..16");
+                    }
+                    gdn_group_limit = (unsigned) parsed;
+                }
+            }
+            const bool observe_gdn = gdn_dir && qsa_gdn_groups < gdn_group_limit;
             if (observe_gdn) {
                 if (slot.id != 0 || slot.prompt.tokens.has_mtmd ||
                     slot.prompt.tokens.size() > 131072 || n_draft > 15) {
