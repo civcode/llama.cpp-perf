@@ -159,7 +159,9 @@ Use `python3 docs/LLAMA-PERF/tools/compare_qsa_logit_distributions.py dense-A-lo
 
 The observer was independently cross-checked against the *range-selection* metadata requested by the recurrent serializer, including active rollback snapshot planes 2/3 and the normal plane 0, over all 36 R, 36 S and one P layers per checkpoint. But **all live source rows were physical cell 0**, so nontrivial `cell.src` indirection and the checkpoint-restore/replay path remain untested. This is an observer-validation gap distinct from the already-observed sparse numerical differences.
 
-Chat AI then added minimal **disabled-by-default metadata** to avoid repeated huge captures for coverage discovery:
+Chat AI then added a bounded `LLAMA_QSA_GDN_GROUP_LIMIT=1..16` (default 16) to permit a one- or two-group verification experiment without the full 5.3 GiB capture. The limit is parsed only when `LLAMA_QSA_GDN_DIR` is set and leaves production defaults unchanged.
+
+Chat AI also added minimal **disabled-by-default metadata** to avoid repeated huge captures for coverage discovery:
 
 - Each `LLAMA_QSA_GDN_DIR` GDN tensor record now includes `source_cell` (actual `cell.src`, possibly -1), `cache_size` (recurrent memory cells), plus the existing `physical_cell`, `logical_source_row`, `rs_plane` and `logical_cell_pos`.
 - Each GDN checkpoint event now includes `rollback_mode`: `none`, `snapshot` or `checkpoint_restore`, determined by the target's existing rollback decision. **This does not change** sampling, acceptance, rollback semantics or state.
