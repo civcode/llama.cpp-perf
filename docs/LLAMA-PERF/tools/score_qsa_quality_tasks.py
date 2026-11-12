@@ -148,6 +148,11 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         "stable_dense_solved": 0, "sparse_regressions": 0,
         "sparse_improvements": 0, "control_unstable": 0,
     })
+    benchmark_domains = defaultdict(lambda: {
+        "tasks": 0, "dense_a_pass": 0, "dense_b_pass": 0, "sparse_pass": 0,
+        "stable_dense_solved": 0, "sparse_regressions": 0,
+        "sparse_improvements": 0, "control_unstable": 0,
+    })
     controls_unstable = 0
     prompt_usage_mismatch = 0
     below_floor = 0
@@ -180,6 +185,16 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         difficulty["dense_a_pass"] += int(scored["dense-a"][0])
         difficulty["dense_b_pass"] += int(scored["dense-b"][0])
         difficulty["sparse_pass"] += int(scored["sparse"][0])
+        domain = task.get("domain") if task["kind"] == "benchmark_mcq" else None
+        if task["kind"] == "benchmark_mcq" and (
+                not isinstance(domain, str) or not domain or len(domain) > 160):
+            raise ValueError(f"missing benchmark domain at {key}")
+        domain_group = benchmark_domains[domain] if domain is not None else None
+        if domain_group is not None:
+            domain_group["tasks"] += 1
+            domain_group["dense_a_pass"] += int(scored["dense-a"][0])
+            domain_group["dense_b_pass"] += int(scored["dense-b"][0])
+            domain_group["sparse_pass"] += int(scored["sparse"][0])
         category["tasks"] += 1
         for name, label in (("dense-a", "dense_a_pass"), ("dense-b", "dense_b_pass"),
                             ("sparse", "sparse_pass")):
@@ -196,10 +211,14 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
             unknown_usage += 1
         if not stable:
             difficulty["control_unstable"] += 1
+            if domain_group is not None:
+                domain_group["control_unstable"] += 1
         # Baseline solvability depends only on the two dense controls, not on
         # whether the sparse request happened to report matching token usage.
         if stable and dense_counts[0] >= context_floor and scored["dense-a"][0]:
             difficulty["stable_dense_solved"] += 1
+            if domain_group is not None:
+                domain_group["stable_dense_solved"] += 1
         classification = "control_unstable"
         if stable and not same_all_counts:
             classification = "prompt_usage_mismatch"
@@ -210,16 +229,21 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
                 classification = "sparse_regression"
                 category["sparse_regressions"] += 1
                 difficulty["sparse_regressions"] += 1
+                if domain_group is not None:
+                    domain_group["sparse_regressions"] += 1
             elif not scored["dense-a"][0] and scored["sparse"][0]:
                 classification = "sparse_improvement"
                 category["sparse_improvements"] += 1
                 difficulty["sparse_improvements"] += 1
+                if domain_group is not None:
+                    domain_group["sparse_improvements"] += 1
             else:
                 classification = "same_score"
                 category["same_score"] += 1
 
         details.append({
             "id": key, "kind": task["kind"], "difficulty": tier,
+            "benchmark_domain": domain,
             "classification": classification, "dense_repeat_stable": stable,
             "prompt_usage_aligned": same_all_counts,
             "dense_a": {"pass": scored["dense-a"][0], "reason": scored["dense-a"][1]},
@@ -250,6 +274,7 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         "sparse_improvements_with_stable_control": sum(v["sparse_improvements"] for v in categories.values()),
         "per_category": dict(categories),
         "per_difficulty": dict(difficulty_summary),
+        "per_benchmark_domain": dict(benchmark_domains),
         "per_task": details,
         "note": (
             "A small synthetic, predeclared exact-answer task pilot; not a trained-model "
