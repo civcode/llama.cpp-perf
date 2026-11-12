@@ -17,6 +17,7 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+#include "src/llama-qsa-debug.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -4995,9 +4996,50 @@ private:
             const size_t n_draft = slot.spec_draft.size();
 
             GGML_ASSERT(n_draft > 0);
+            // Separate from the existing logits manifest, but with the same
+            // actual target/draft token histories. Nothing is sampled or forced.
+            static unsigned qsa_gdn_groups = 0;
+            static unsigned qsa_gdn_step = 0;
+            const char * gdn_dir = std::getenv("LLAMA_QSA_GDN_DIR");
+            const bool observe_gdn = gdn_dir && qsa_gdn_groups < 16;
+            if (observe_gdn) {
+                if (slot.id != 0 || slot.prompt.tokens.has_mtmd ||
+                    slot.prompt.tokens.size() > 131072 || n_draft > 15) {
+                    GGML_ABORT("QSA GDN observer supports only bounded text-only slot 0");
+                }
+                if (qsa_gdn_step == 0 &&
+                    std::filesystem::exists(std::string(gdn_dir) + "/manifest.jsonl")) {
+                    GGML_ABORT("QSA GDN observer requires a fresh empty directory");
+                }
+            }
 
             // batch indices of the draft tokens, used to get the token probabilities below
             auto spec_i_batch = std::move(slot.spec_i_batch);
+            const std::vector<llama_token> gdn_input_history =
+                    observe_gdn ? slot.prompt.tokens.get_tokens() : std::vector<llama_token>{};
+            const std::vector<llama_token> gdn_draft_ids =
+                    observe_gdn ? slot.spec_draft : std::vector<llama_token>{};
+            const llama_pos gdn_position =
+                    slot.prompt.tokens.pos_next() - (llama_pos) spec_i_batch.size();
+            const auto gdn_snapshot = [&](const char * phase,
+                    const std::vector<llama_token> & accepted, bool rollback) {
+                if (!observe_gdn) return;
+                GGML_ASSERT(qsa_gdn_step < 1024);
+                const unsigned step = qsa_gdn_step++;
+                const json event = {{"kind", "event"}, {"step", step}, {"phase", phase},
+                    {"seq", slot.id}, {"position", gdn_position},
+                    {"target_ids", gdn_input_history}, {"draft_ids", gdn_draft_ids},
+                    {"accepted", accepted}, {"rollback", rollback},
+                    {"replay", slot.spec_is_replay}};
+                std::ofstream manifest(std::string(gdn_dir) + "/manifest.jsonl", std::ios::app);
+                if (!manifest) GGML_ABORT("QSA GDN observer cannot open manifest");
+                manifest << event.dump() << '\n';
+                manifest.close();
+                if (!manifest) GGML_ABORT("QSA GDN observer cannot write manifest");
+                if (!llama_qsa_debug_dump_gdn(slot.ctx_tgt, slot.id, gdn_dir, step, phase, gdn_position)) {
+                    GGML_ABORT("QSA GDN observer cannot resolve or copy logical recurrent state");
+                }
+            };
 
             // verify and try to accept the draft
             {
@@ -5013,6 +5055,7 @@ private:
                 server_step_trace::mark("verification_sample_begin", slot.id,
                         slot.stats.n_draft_verif_steps, slot.stats.n_gen,
                         static_cast<int32_t>(spec_i_batch.size()), static_cast<int32_t>(n_draft));
+                gdn_snapshot("pre_verification", {}, false);
 
                 // Diagnostic only: retain actual pre-sampling target logits for
                 // bounded, token-aligned comparisons. No sampling is overridden.
@@ -5056,6 +5099,7 @@ private:
                         static_cast<int32_t>(accepted.size()), static_cast<int32_t>(n_draft));
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+                gdn_snapshot("post_verification", accepted, n_rollback > 0);
 
                 if (observe_logits) {
                     // Each event has a distinct position and carries the full
@@ -5120,6 +5164,8 @@ private:
 
                         slot.prompt.tokens.keep_first(ckpt.n_tokens);
                         common_sampler_copy(smpl_save.get(), slot.smpl.get());
+                        gdn_snapshot("post_rollback", slot.spec_draft, true);
+                        if (observe_gdn) ++qsa_gdn_groups;
 
                         return;
                     }
@@ -5167,6 +5213,9 @@ private:
             SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
 
             slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
+            gdn_snapshot(n_accepted == n_draft ? "post_accept" : "post_rollback",
+                    ids, n_accepted != n_draft);
+            if (observe_gdn) ++qsa_gdn_groups;
 
             for (size_t i = 0; i < ids.size(); ++i) {
                 completion_token_output result;
