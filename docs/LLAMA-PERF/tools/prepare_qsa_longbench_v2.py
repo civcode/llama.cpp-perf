@@ -227,6 +227,8 @@ def main() -> int:
             previous = json.loads(previous_bytes)
             if not isinstance(previous, dict) or previous.get("source_name") != SOURCE:
                 raise ValueError("exclusion manifest must be a LongBench-v2 task manifest")
+            if previous.get("source_file_sha256") != _file_hash(args.source):
+                raise ValueError("exclusion manifest source digest differs from current dataset")
             prior_tasks = previous.get("tasks")
             if not isinstance(prior_tasks, list) or not 1 <= len(prior_tasks) <= 503:
                 raise ValueError("invalid prior LongBench-v2 task list")
