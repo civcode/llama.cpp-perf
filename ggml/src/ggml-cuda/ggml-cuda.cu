@@ -2705,6 +2705,99 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
+// Disabled-by-default, bounded post-op diagnostic for Qwen3.8 QSA layer-15
+// score/top-k/mask inputs. It runs after GPU TOP_K or TOP_K_MASK completes
+// on the *same stream*. Do not use these synchronized captures for timing.
+static void ggml_cuda_qsa_topk_trace(ggml_backend_cuda_context & ctx, const ggml_tensor * dst) {
+    const char * dir = std::getenv("GGML_QSA_TOPK_TRACE_DIR");
+    if (!dir) return;
+    if (!std::getenv("GGML_QSA_MASK_AUDIT")) {
+        GGML_ABORT("GGML_QSA_TOPK_TRACE_DIR requires GGML_QSA_MASK_AUDIT to disable GPU graphs");
+    }
+#ifndef GGML_USE_HIP
+    GGML_UNUSED(ctx);
+    GGML_UNUSED(dst);
+    return;
+#else
+    if (ctx.device != 0) return;
+    const bool is_mask = dst->op == GGML_OP_TOP_K_MASK && strcmp(dst->name, "qsa_topk_mask_il15") == 0;
+    const bool is_topk = dst->op == GGML_OP_TOP_K && strcmp(dst->name, "qsa_topk_il15") == 0;
+    if (!is_mask && !is_topk) return;
+
+    const char * limit_text = std::getenv("GGML_QSA_TOPK_TRACE_LIMIT");
+    long limit = 64;
+    if (limit_text) {
+        char * end = nullptr;
+        limit = std::strtol(limit_text, &end, 10);
+        if (!end || *end != '\0' || limit < 1 || limit > 128) {
+            GGML_ABORT("GGML_QSA_TOPK_TRACE_LIMIT must be an integer 1..128");
+        }
+    }
+
+    static std::atomic<unsigned long> counts_topk{0};
+    static std::atomic<unsigned long> counts_mask{0};
+    const unsigned long group = (is_mask ? counts_mask : counts_topk).fetch_add(1);
+    if (group >= (unsigned long) limit) {
+        if (group == (unsigned long) limit) {
+            fprintf(stderr, "QSA_TOPK_TRACE limit=%ld reached kind=%s device=%d\n",
+                    limit, is_mask ? "mask" : "topk", ctx.device);
+        }
+        return;
+    }
+
+    const ggml_tensor * topk   = is_mask ? dst->src[1] : dst;
+    const ggml_tensor * score  = is_mask ? dst->src[2] : dst->src[0];
+    const ggml_tensor * blocks = is_mask ? dst->src[3] : nullptr;
+    const ggml_tensor * extra  = is_mask ? dst->src[4] : nullptr;
+    if (!topk || !score || topk->type != GGML_TYPE_I32 || score->type != GGML_TYPE_F32 ||
+        !ggml_is_contiguous(topk) || !ggml_is_contiguous(score) ||
+        topk->ne[1] != score->ne[1] || score->ne[1] <= 0 || score->ne[1] > 4096 ||
+        score->ne[0] <= 0 || score->ne[0] > 262144 || topk->ne[0] <= 0 || topk->ne[0] > score->ne[0]) {
+        GGML_ABORT("QSA_TOPK_TRACE unexpected score/top-k shape or type");
+    }
+    if ((blocks && (blocks->type != GGML_TYPE_I32 || !ggml_is_contiguous(blocks) ||
+                    blocks->ne[1] != score->ne[0])) ||
+        (extra && (extra->type != GGML_TYPE_I32 || !ggml_is_contiguous(extra)))) {
+        GGML_ABORT("QSA_TOPK_TRACE unexpected block/extra layout");
+    }
+
+    const char * kind = is_mask ? "mask" : "topk";
+    fprintf(stderr,
+            "QSA_TOPK_GROUP backend=HIP device=%d layer=15 kind=%s group=%lu kv=%lld n_pool=%lld n_top=%lld n_q=%lld\n",
+            ctx.device, kind, group, is_mask ? (long long) dst->ne[0] : -1LL,
+            (long long) score->ne[0], (long long) topk->ne[0], (long long) score->ne[1]);
+
+    const ggml_tensor * parts[] = {score, topk, blocks, extra};
+    const char * names[] = {"score", "topk", "blocks", "extra"};
+    for (int i = 0; i < 4; ++i) {
+        const ggml_tensor * t = parts[i];
+        if (!t) continue;
+        const size_t nbytes = ggml_nbytes(t);
+        if (!t->data || nbytes == 0 || nbytes > size_t(32)*1024*1024) {
+            GGML_ABORT("QSA_TOPK_TRACE tensor exceeds 32 MiB individual bound");
+        }
+        std::vector<unsigned char> bytes(nbytes);
+        CUDA_CHECK(cudaMemcpyAsync(bytes.data(), t->data, nbytes, cudaMemcpyDeviceToHost, ctx.stream()));
+        CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+        char file[4096];
+        const int n = snprintf(file, sizeof(file), "%s/HIP%d-l15-%s-g%lu-%s.bin",
+                               dir, ctx.device, kind, group, names[i]);
+        if (n < 0 || size_t(n) >= sizeof(file)) GGML_ABORT("QSA_TOPK_TRACE output path too long");
+        FILE * handle = fopen(file, "wb");
+        if (!handle) GGML_ABORT("QSA_TOPK_TRACE cannot open %s", file);
+        const size_t written = fwrite(bytes.data(), 1, nbytes, handle);
+        const int closed = fclose(handle);
+        if (written != nbytes || closed != 0) GGML_ABORT("QSA_TOPK_TRACE write failed for %s", file);
+        fprintf(stderr,
+                "QSA_TOPK_PART backend=HIP device=%d layer=15 kind=%s group=%lu name=%s type=%s ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu bytes=%zu path=%s\n",
+                ctx.device, kind, group, names[i], ggml_type_name(t->type),
+                (long long) t->ne[0], (long long) t->ne[1],
+                (long long) t->ne[2], (long long) t->ne[3],
+                t->nb[0], t->nb[1], t->nb[2], t->nb[3], nbytes, file);
+    }
+#endif
+}
+
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     switch (dst->op) {
         case GGML_OP_ARGMAX:
@@ -3061,6 +3154,10 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         default:
             return false;
+    }
+
+    if (dst->op == GGML_OP_TOP_K || dst->op == GGML_OP_TOP_K_MASK) {
+        ggml_cuda_qsa_topk_trace(ctx, dst);
     }
 
     cudaError_t err = cudaGetLastError();
