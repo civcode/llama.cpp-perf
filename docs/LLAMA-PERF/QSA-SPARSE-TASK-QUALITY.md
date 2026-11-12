@@ -57,3 +57,30 @@ The 900-record tasks demanded difficult multi-hop retrieval and computation on ~
 Run on the GPU host with the same target, MTP draft, three-device split, F16 KV, graph-disabled audit and selector constraints used in Report 0024. Begin with a frozen calibration manifest and **dense A/B only**. If at least one long-context case is stably solved, run sparse on the **entire original manifest, not just the successes**, and record real per-task HIP Q4 launch counts. Report anchored and lookup tiers separately; do not count an anchored success as evidence of retrieving distant information. The task-level sample remains too small for statistical quality certification or a production tolerance.
 
 The next local-run details are in .ai/handoffs/handoff-0025.md. Sparse numerical equivalence, HIP graph safety, mixed production sequences and graph-safe overflow remain separate blockers. No default promotion or full-model performance A/B is authorized.
+
+
+## Iteration 0025 — baseline-calibrated task preservation and the paired follow-up
+
+[Report 0025](../../.ai/reports/report-0025.md) successfully avoided the previous floor. The frozen seed-20261113, 520-record ledger suite contained 12 tasks (six anchored, six lookup) at ~21.6K server prompt tokens. Dense A/B matched exactly on all 12 and independently solved **8/12**: 4/4 retrieval and 4/4 exact-JSON instruction-following, while all four arithmetic cases remained baseline failures. The experimental sparse run preserved all eight successes; only one arithmetic response changed, with both variants wrong. The ROCm trace recorded **490 actual sparse GQA12 Q4 HIP launches inside 49 natural MTP target-verification groups**, with activation on every task. This is genuine **small synthetic task-level preservation evidence**, but does not define a general degradation margin or override known GDN/logit numerical differences. A perfect 8/8 preserved score from this sample is not a production GO.
+
+### Iteration 0026: true long-context counterfactual pair consistency
+
+To move beyond repeating the same easily solved fixed answer, use a **new frozen task manifest**, not a revision of 0025's task set:
+
+- tools/generate_qsa_counterfactual_tasks.py creates **six A/B counterfactual pairs, 12 tasks**: literal TAG retrieval and strict JSON STATUS extraction, each with the target record near the **early, middle or late** part of a long ledger. Only **one factual field in one ledger row** changes between each A/B pair. The question and all unrelated records stay byte-identical. The correct answer changes. Neither question supplies the gold value. Its source is synthetic and is **not certified held-out**.
+- tools/analyze_qsa_counterfactual_pairs.py verifies each complete A/B pair really differs in only the intended source field, that its stored gold answers match those actual rows, and that the source-location band is correct. It compares the three inference conditions using the existing strict local response schema and exact-answer grader. With only dense A and dense B supplied, it reports pairs **stably solved in both counterfactual variants**. Only if such a pair exists should the full frozen suite be run under sparse. With --sparse, it reports whether sparse preserves both variant-specific answers on the comparable pairs, genuine pair regressions/improvements and non-comparable input-tokenization cases. It does **not** infer GPU kernel launches or apply a product tolerance.
+- tools/test_qsa_counterfactual_pairs.py contains host tests for deterministic task generation, factual source/gold mutation, stable dense calibration, pair outcome changes, source-label errors and mismatched tokenization. These files were authored/committed by Chat AI but are not yet executed on the GPU host.
+
+Example manual commands, with all raw files outside Git:
+
+    python3 docs/LLAMA-PERF/tools/generate_qsa_counterfactual_tasks.py --out /external/tasks.json --records 520 --seed 20261114
+    python3 docs/LLAMA-PERF/tools/test_qsa_counterfactual_pairs.py
+    python3 docs/LLAMA-PERF/tools/run_qsa_quality_tasks.py /external/tasks.json --url http://127.0.0.1:8080 --condition dense-a --out /external/dense-a.jsonl
+    python3 docs/LLAMA-PERF/tools/run_qsa_quality_tasks.py /external/tasks.json --url http://127.0.0.1:8080 --condition dense-b --out /external/dense-b.jsonl
+    python3 docs/LLAMA-PERF/tools/analyze_qsa_counterfactual_pairs.py /external/tasks.json /external/dense-a.jsonl /external/dense-b.jsonl --out /external/calibration.json --require-baseline-pair
+    python3 docs/LLAMA-PERF/tools/run_qsa_quality_tasks.py /external/tasks.json --url http://127.0.0.1:8080 --condition sparse --out /external/sparse.jsonl
+    python3 docs/LLAMA-PERF/tools/analyze_qsa_counterfactual_pairs.py /external/tasks.json /external/dense-a.jsonl /external/dense-b.jsonl --sparse /external/sparse.jsonl --out /external/paired-summary.json
+
+Use fresh, sequential dense A/B and sparse servers with the identical Qwen target and MTP draft settings from 0025, sparse flag **only** on the third server, fixed temp0/seed42, no graph replay, and sparse Q4 kernel activation verified per task using actual HIP launches or well-grounded bounded trace. Do not blindly run sparse if there is no valid baseline-solved counterfactual pair. Do not cherry-pick individual successful variants: each pair and the **entire predeclared manifest** remain the units of reporting.
+
+A correct answer on both sides of the single-field intervention is evidence that a model obeyed the specified source change on this synthetic task. It is not proof of model fidelity on real user workloads, task-performance statistical equivalence, HIP graph safety, production mixed sequences or graph-safe overflow. Numerical correctness and default promotion remain **NO-GO**; the user has not approved any degradation criterion.
