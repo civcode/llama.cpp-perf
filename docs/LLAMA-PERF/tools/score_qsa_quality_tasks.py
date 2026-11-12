@@ -180,7 +180,9 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
             unknown_usage += 1
         if not stable:
             difficulty["control_unstable"] += 1
-        if stable and same_all_counts and eligible_length is True and scored["dense-a"][0]:
+        # Baseline solvability depends only on the two dense controls, not on
+        # whether the sparse request happened to report matching token usage.
+        if stable and dense_counts[0] >= context_floor and scored["dense-a"][0]:
             difficulty["stable_dense_solved"] += 1
         classification = "control_unstable"
         if stable and not same_all_counts:

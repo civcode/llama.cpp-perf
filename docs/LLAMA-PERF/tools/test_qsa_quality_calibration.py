@@ -11,7 +11,7 @@ import unittest
 from calibrate_qsa_dense_tasks import calibrate
 from generate_qsa_calibrated_tasks import make_calibrated_tasks
 from run_qsa_quality_tasks import load_tasks, sha256
-from score_qsa_quality_tasks import grade
+from score_qsa_quality_tasks import grade, score
 
 
 class CalibratedTaskTests(unittest.TestCase):
@@ -19,7 +19,8 @@ class CalibratedTaskTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        self.tasks = make_calibrated_tasks(19, 40)
+        self.records = 40
+        self.tasks = make_calibrated_tasks(19, self.records)
         self.manifest = self.root / "tasks.json"
         self.manifest.write_text(json.dumps({"version": 1, "tasks": self.tasks}), encoding="utf-8")
         self.digest, _ = load_tasks(self.manifest)
@@ -69,7 +70,7 @@ class CalibratedTaskTests(unittest.TestCase):
                 key, amount, owner, tag, status, region = match.groups()
                 source[key] = {"amount": int(amount), "owner": owner, "tag": tag,
                                "status": status, "region": region}
-            self.assertEqual(len(source), 40)
+            self.assertEqual(len(source), self.records)
             key = re.search(r"K\d{5}", question).group(0)
             self.assertIn(key, source)
             row = source[key]
@@ -93,6 +94,13 @@ class CalibratedTaskTests(unittest.TestCase):
                             "status": row["status"]}
             self.assertEqual(task["expected"]["value"], expected)
             self.assertTrue(grade(task, self._gold_text(task))[0])
+            if difficulty == "anchored" and kind == "retrieval":
+                self.assertIn(f"ID={key} OWNER={row['owner']} TAG={row['tag']}", question)
+            if difficulty == "anchored" and kind == "instruction_following":
+                self.assertIn(f"ID={key} REGION={row['region']} AMOUNT={row['amount']}", question)
+            if difficulty == "anchored" and kind == "code_reasoning":
+                for anchor_key, amount in re.findall(r"AMOUNT\((K\d{5})\)=(\d+)", question):
+                    self.assertEqual(int(amount), source[anchor_key]["amount"])
             if difficulty == "lookup":
                 self.assertNotIn(row["tag"], question)
                 self.assertNotIn(row["owner"], question)
@@ -125,6 +133,22 @@ class CalibratedTaskTests(unittest.TestCase):
         self.assertEqual(result["dense_repeat_stable"], 12)
         self.assertEqual(result["reported_long_context_eligible"], 0)
         self.assertTrue(result["baseline_floor"])
+
+    def test_tier_scoring_and_sparse_usage_do_not_change_dense_solved_count(self):
+        sparse = self.root / "sparse.jsonl"
+        rows = [json.loads(s) for s in self.a.read_text().splitlines()]
+        for row in rows:
+            row["condition"] = "sparse"
+        anchored = next(i for i, t in enumerate(self.tasks) if t["difficulty"] == "anchored")
+        lookup = next(i for i, t in enumerate(self.tasks) if t["difficulty"] == "lookup")
+        rows[anchored]["text"] = "WRONG"
+        rows[lookup]["prompt_tokens"] += 1
+        sparse.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = score(self.manifest, self.a, self.b, sparse)
+        self.assertEqual(result["per_difficulty"]["anchored"]["sparse_regressions"], 1)
+        self.assertEqual(result["per_difficulty"]["lookup"]["stable_dense_solved"], 6)
+        self.assertEqual(result["per_task"][lookup]["classification"], "prompt_usage_mismatch")
+        self.assertEqual(result["per_difficulty"]["lookup"]["sparse_regressions"], 0)
 
     def test_invalid_seed_and_record_bounds_rejected(self):
         for seed, records in ((-1, 500), (2**32, 500), (19, 20), (19, 1000)):
