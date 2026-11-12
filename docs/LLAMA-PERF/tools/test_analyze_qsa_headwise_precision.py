@@ -44,7 +44,7 @@ class HeadwisePrecisionTests(unittest.TestCase):
         self.b[:, 1:, 8, :] = 1.0
         result = summarize(self.ref, self.a, self.b)
         self.assertEqual(result["query_headwise"][8]["winner"], "dense")
-        self.assertEqual(result["query_headwise"][32+8]["winner"], "sparse")
+        self.assertEqual(result["query_headwise"][24+8]["winner"], "sparse")
         self.assertEqual(result["headwise"][8]["winner"], "dense")
 
     def test_identical_paths_tie(self):
