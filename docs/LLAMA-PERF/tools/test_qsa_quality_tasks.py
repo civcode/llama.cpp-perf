@@ -142,7 +142,18 @@ class TaskQualityTests(unittest.TestCase):
         self.paths["sparse"].write_text("".join(json.dumps(r)+"\n" for r in rows))
         report = self._score()
         self.assertEqual(report["tasks_below_context_floor"], 1)
+        self.assertEqual(report["dense_repeat_unstable_tasks"], 0)
+        self.assertEqual(report["prompt_usage_mismatch_tasks"], 1)
+        self.assertEqual(report["per_task"][0]["classification"], "prompt_usage_mismatch")
+
+    def test_dense_repeat_prompt_usage_mismatch_is_unstable(self):
+        rows = [json.loads(s) for s in self.paths["dense-b"].read_text().splitlines()]
+        rows[0]["prompt_tokens"] = 19999
+        self.paths["dense-b"].write_text("".join(json.dumps(r)+"\n" for r in rows))
+        report = self._score()
         self.assertEqual(report["dense_repeat_unstable_tasks"], 1)
+        self.assertEqual(report["prompt_usage_mismatch_tasks"], 1)
+        self.assertEqual(report["per_task"][0]["classification"], "control_unstable")
 
     def test_local_endpoint_validation(self):
         self.assertEqual(_localhost_api("http://127.0.0.1:8080"),
