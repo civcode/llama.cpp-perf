@@ -124,7 +124,9 @@ def analyze(dense_a: Path, dense_b: Path, sparse: Path, *,
         expected_bytes = math.prod(a["shape"]) * (4 if a["dtype"] == "f32" else 2)
         if not 0 < expected_bytes <= 64*1024*1024:
             raise ValueError(f"invalid bounded recurrent row size: {key}")
-        if bytes_read + 3*expected_bytes > MAX_TOTAL_BYTES:
+        # Charge all five raw reads: A/B bytewise verification, then A/C
+        # numeric decoding via the existing strict snapshot reader.
+        if bytes_read + 5*expected_bytes > MAX_TOTAL_BYTES:
             raise ValueError("bounded total recurrent-state reads exceed 1 GiB")
         for p in filenames:
             if p.stat().st_size != expected_bytes:
@@ -135,7 +137,7 @@ def analyze(dense_a: Path, dense_b: Path, sparse: Path, *,
         if dense_bytes != filenames[1].read_bytes():
             raise ValueError(f"dense A/B snapshots differ bytewise: {key}")
         raw_equal += 1
-        bytes_read += 3*expected_bytes
+        bytes_read += 5*expected_bytes
         data_a = values(dense_a, a)
         data_c = values(sparse, c)
         stats = diff_stats(data_a, data_c, 0.0, 0.0)
