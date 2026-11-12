@@ -6,9 +6,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from prepare_qsa_longbench_v2 import make_manifest
-from run_qsa_quality_tasks import load_tasks, sha256
+from run_qsa_quality_tasks import BENCHMARK_SYSTEM_PROMPT, load_tasks, run, sha256
 from score_qsa_quality_tasks import grade, score
 
 
@@ -69,6 +70,18 @@ class LongBenchV2AdapterTests(unittest.TestCase):
             self.assertEqual(t["max_tokens"], 32)
             self.assertTrue(grade(t, "The correct answer is (" +
                                   t["expected"]["value"] + ")")[0])
+
+    def test_runner_uses_document_system_prompt_for_benchmark(self):
+        manifest = make_manifest(self.source, seed=1, limit=1,
+                                 min_context_bytes=100, max_prompt_bytes=4000)
+        path = self.root / "tasks.json"
+        path.write_text(json.dumps(manifest))
+        result = {"text": "A", "finish_reason": "stop", "prompt_tokens": 22000,
+                  "completion_tokens": 1, "response_model": "local"}
+        with patch("run_qsa_quality_tasks.request_completion", return_value=result) as request:
+            run(path, "http://127.0.0.1:8080", "dense-a", self.root / "out.jsonl")
+        self.assertEqual(request.call_args.kwargs["system_prompt"], BENCHMARK_SYSTEM_PROMPT)
+        self.assertNotIn("fictional", BENCHMARK_SYSTEM_PROMPT)
 
     def test_benchmark_scoring_and_domain_regressions(self):
         manifest = make_manifest(self.source, seed=1, limit=4,

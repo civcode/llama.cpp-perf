@@ -84,11 +84,19 @@ def _localhost_api(url: str) -> str:
     return url.rstrip("/") + "/v1/chat/completions"
 
 
-def request_completion(url: str, prompt: str, max_tokens: int, timeout: int = 600) -> dict:
+BENCHMARK_SYSTEM_PROMPT = (
+    "You are answering a deterministic functional evaluation. "
+    "Use the user-provided documents and instructions exactly. "
+    "Output only the requested answer; no explanation or code fences."
+)
+
+
+def request_completion(url: str, prompt: str, max_tokens: int, timeout: int = 600,
+                       system_prompt: str = SYSTEM_PROMPT) -> dict:
     payload = {
         "model": "local",
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
@@ -151,7 +159,9 @@ def run(tasks_file: Path, url: str, condition: str, output: Path,
             # Local monotonic markers correlate each request with the backend's
             # QSA audit timestamps; they are not a throughput measurement.
             start_ns = time.monotonic_ns()
-            result = request_completion(endpoint, task["prompt"], task["max_tokens"], timeout)
+            system = BENCHMARK_SYSTEM_PROMPT if task["kind"] == "benchmark_mcq" else SYSTEM_PROMPT
+            result = request_completion(endpoint, task["prompt"], task["max_tokens"], timeout,
+                                        system_prompt=system)
             end_ns = time.monotonic_ns()
             record = {
                 "id": task["id"],
