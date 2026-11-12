@@ -35,9 +35,12 @@ def classify(message: str) -> tuple[str, str | None] | None:
     if xid:
         return "nvidia_xid", xid.group(1)
     low = message.lower()
-    if "aer" in low and ("pci" in low or "pcie" in low):
+    if ("pci" in low or "pcie" in low) and (
+            re.search(r"\baer:\s*(?:.*\b(?:error|fatal|uncorrected|corrected)\b)", low)
+            or "pcie bus error" in low):
         return "pcie_aer", None
-    if "dpc" in low and ("pci" in low or "pcie" in low):
+    if ("pci" in low or "pcie" in low) and re.search(
+            r"\bdpc:\s*(?:.*\b(?:containment|trigger|error|fatal)\b)", low):
         return "pcie_dpc", None
     if ("pcie" in low or "pci " in low) and (
             "link down" in low or "link failure" in low or
@@ -56,7 +59,7 @@ def classify(message: str) -> tuple[str, str | None] | None:
             "ring timeout" in low or "gpu reset" in low or "vm fault" in low or
             "device lost" in low):
         return "amd_fault", None
-    if "iommu" in low and ("fault" in low or "error" in low):
+    if "iommu" in low and re.search(r"\b(?:fault|error)\b", low):
         return "iommu_error", None
     return None
 

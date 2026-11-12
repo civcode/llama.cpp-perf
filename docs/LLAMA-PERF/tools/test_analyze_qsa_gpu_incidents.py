@@ -42,6 +42,14 @@ class IncidentAnalyzerTests(unittest.TestCase):
         self.assertIsNone(classify("nvidia GPU enumerated and healthy"))
         self.assertIsNone(classify("flash_attn_ext_f16 launch success"))
 
+    def test_boot_capabilities_and_iommu_default_are_not_faults(self):
+        self.assertIsNone(classify(
+            'acpi PNP0A08:00: _OSC: OS now controls [PCIeHotplug AER PCIeCapability DPC]'))
+        self.assertIsNone(classify('iommu: Default domain type: Translated'))
+        self.assertEqual(classify('iommu: DMA fault at address'), ('iommu_error', None))
+        self.assertEqual(classify('pcieport: PCIe Bus Error: severity=Corrected'),
+                         ('pcie_aer', None))
+
     def test_isotime_parsing_with_timezone_and_invalid_input(self):
         t = time_of("2026-11-12T19:20:30+0100 host kernel: NVRM: Xid 79")
         self.assertIsNotNone(t)
