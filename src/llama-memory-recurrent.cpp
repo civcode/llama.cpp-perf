@@ -1000,12 +1000,12 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
                 "{\"kind\":\"tensor\",\"step\":%u,\"phase\":\"%s\",\"seq\":%d,"
                 "\"position\":%d,\"layer\":%zu,\"name\":\"%s\","
                 "\"dtype\":\"%s\",\"shape\":[%lld],\"path\":\"%s\","
-                "\"physical_cell\":%d,\"source_cell\":%d,\"cache_size\":%u,"
-                "\"logical_source_row\":%zu,\"rs_plane\":%u,"
+                "\"physical_cell\":%d,\"source_cell\":%d,\"staged_source_cell\":%d,"
+                "\"cache_size\":%u,\"logical_source_row\":%zu,\"rs_plane\":%u,"
                 "\"logical_cell_pos\":%d}\n",
                 step, phase, seq_id, position, il, names[kind],
                 ggml_type_name(t->type), (long long) t->ne[0], filename,
-                tail, cell.src, size, src_row, plane, cell.pos) < 0) {
+                tail, cell.src, cell.src0, size, src_row, plane, cell.pos) < 0) {
                 ok = false; break;
             }
         }
