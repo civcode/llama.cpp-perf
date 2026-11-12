@@ -25,7 +25,7 @@ static void usage(int, char ** argv) {
         "Usage: %s -m model.gguf [model/split/context flags]\n"
         "Environment: LLAMA_QSA_REFERENCE_TEXT_FILE=<heldout text> \n"
         "             LLAMA_QSA_REFERENCE_OUT_DIR=<fresh existing dir> \n"
-        "             LLAMA_QSA_REFERENCE_ROWS=1..64 (default 32)\n",
+        "             LLAMA_QSA_REFERENCE_ROWS=4..64 in multiples of 4 (default 32)\n",
         argv[0]);
 }
 
@@ -33,7 +33,7 @@ static bool parse_count(const char * input, int & result) {
     if (!input || !*input) return false;
     char * end = nullptr;
     const long n = std::strtol(input, &end, 10);
-    if (!end || *end != '\0' || n < 1 || n > 64) return false;
+    if (!end || end == input || *end != '\0' || n < 4 || n > 64 || n % 4 != 0) return false;
     result = int(n);
     return true;
 }
@@ -66,7 +66,7 @@ int main(int argc, char ** argv) {
     int n_rows = 32;
     if (const char * v = std::getenv("LLAMA_QSA_REFERENCE_ROWS")) {
         if (!parse_count(v, n_rows)) {
-            std::fprintf(stderr, "LLAMA_QSA_REFERENCE_ROWS must be 1..64\n");
+            std::fprintf(stderr, "LLAMA_QSA_REFERENCE_ROWS must be a multiple of four from 4..64\n");
             return 2;
         }
     }
@@ -135,7 +135,12 @@ int main(int argc, char ** argv) {
     auto cparams = common_context_params_to_llama(params);
     // Keep the user's chosen n_ctx / KV precision / batch and GPU split.
     // This is a correctness diagnostic, not a prefill timing benchmark.
-    const uint32_t n_batch = std::max<uint32_t>(1, cparams.n_batch);
+    const uint32_t n_batch = cparams.n_batch;
+    if (n_batch < 4) {
+        std::fprintf(stderr, "Reference runner requires n_batch >= 4 for Q=4 QSA\n");
+        llama_model_free(model);
+        return 3;
+    }
     if (cparams.n_ctx != 0 && tokens.size() > cparams.n_ctx) {
         std::fprintf(stderr, "Reference requires %zu positions, but ctx has %u\n",
                      tokens.size(), cparams.n_ctx);
@@ -178,58 +183,75 @@ int main(int argc, char ** argv) {
     int32_t pos = 0;
     while (pos <= last_scored_pos && !failed) {
         const bool capture = pos >= first_scored_pos;
-        const int32_t nt = capture ? 1
+        // The optimized GQA12 path is for *four query positions at once*.
+        // A single-token target loop would not test the experimental kernel.
+        const int32_t nt = capture ? 4
             : std::min<int32_t>((int32_t) std::min<uint32_t>(n_batch, 512),
                                 first_scored_pos - pos);
+        if (capture && (nt != 4 || pos+nt-1 > last_scored_pos)) {
+            std::fprintf(stderr, "Incorrect four-query reference group\n");
+            failed = true;
+            break;
+        }
         llama_batch_ext_clear(batch);
+        std::vector<std::string> prefix_hashes;
         for (int32_t i = 0; i < nt; ++i) {
             const auto idx = llama_batch_ext_add_token(batch, 0, tokens[pos + i]);
             const llama_pos token_pos = pos + i;
-            llama_batch_ext_set_pos(batch, idx, &token_pos);
-            if (i + 1 == nt) llama_batch_ext_set_output_logits(batch, idx, true);
+            if (idx < 0 || !llama_batch_ext_set_pos(batch, idx, &token_pos) ||
+                !llama_batch_ext_set_output_logits(batch, idx, capture || i + 1 == nt)) {
+                std::fprintf(stderr, "Could not set target batch token or logits flag\n");
+                failed = true;
+                break;
+            }
             prefix_hash = prefix_hash_add(prefix_hash, tokens[pos+i]);
+            if (capture) prefix_hashes.push_back(hash_hex(prefix_hash));
         }
-
+        if (failed) break;
         if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch)) {
             std::fprintf(stderr, "Target decode failed at token position %d\n", pos);
             failed = true;
             break;
         }
         if (capture) {
-            const float * logits = llama_get_logits(ctx);
-            if (!logits) {
-                std::fprintf(stderr, "Target returned no logits at position %d\n", pos);
-                failed = true;
-                break;
-            }
-            const uint32_t step = (uint32_t) (pos - first_scored_pos);
-            const llama_token label = tokens[pos+1];
-            const std::string filename = "logits-" + std::to_string(step) + ".f32";
-            std::ofstream file(out + "/" + filename, std::ios::binary);
-            file.write(reinterpret_cast<const char *>(logits),
-                       (size_t) n_vocab * sizeof(float));
-            file.close();
-            if (!file) { failed = true; break; }
+            for (int32_t i = 0; i < nt; ++i) {
+                // All four output flags are set, so ith logits row corresponds
+                // to the ith causal query (not the last query in the batch).
+                const float * logits = llama_get_logits_ith(ctx, i);
+                if (!logits) {
+                    std::fprintf(stderr, "No target logits for query %d at position %d\n", i, pos+i);
+                    failed = true;
+                    break;
+                }
+                const int32_t row_pos = pos+i;
+                const uint32_t step = (uint32_t) (row_pos - first_scored_pos);
+                const llama_token label = tokens[row_pos+1];
+                const std::string filename = "logits-" + std::to_string(step) + ".f32";
+                std::ofstream file(out + "/" + filename, std::ios::binary);
+                file.write(reinterpret_cast<const char *>(logits),
+                           (size_t) n_vocab * sizeof(float));
+                file.close();
+                if (!file) { failed = true; break; }
 
-            const std::string hash = hash_hex(prefix_hash);
-            // Keep the manifest contract compatible with compare_qsa_model_state
-            // while adding a prefix fingerprint, so dense and sparse runs must
-            // agree on every actual token fed into this target.
-            manifest << "{\"kind\":\"event\",\"step\":" << step
-                     << ",\"phase\":\"teacher_forced_logits\",\"seq\":0,\"position\":" << pos
-                     << ",\"target_ids\":[" << tokens[pos] << "],\"draft_ids\":[],"
-                     << "\"accepted\":[],\"rollback\":false,\"replay\":false,"
-                     << "\"prefix_token_hash64\":\"" << hash << "\","
-                     << "\"prefix_token_count\":" << pos+1 << "}\n";
-            manifest << "{\"kind\":\"tensor\",\"step\":" << step
-                     << ",\"phase\":\"teacher_forced_logits\",\"seq\":0,\"position\":" << pos
-                     << ",\"layer\":-1,\"name\":\"logits\",\"dtype\":\"f32\","
-                     << "\"shape\":[" << n_vocab << "],\"path\":\"" << filename << "\"}\n";
-            references << "{\"step\":" << step
-                       << ",\"phase\":\"teacher_forced_logits\",\"seq\":0,\"position\":" << pos
-                       << ",\"label_token\":" << label
-                       << ",\"origin\":\"teacher_forced_reference\"}\n";
-            if (!manifest || !references) { failed = true; break; }
+                // Strict manifest equality includes the prefix token hash,
+                // full consumed-token count and query-group position.
+                manifest << "{\"kind\":\"event\",\"step\":" << step
+                         << ",\"phase\":\"teacher_forced_logits\",\"seq\":0,\"position\":" << row_pos
+                         << ",\"target_ids\":[" << tokens[row_pos] << "],\"draft_ids\":[],"
+                         << "\"accepted\":[],\"rollback\":false,\"replay\":false,"
+                         << "\"prefix_token_hash64\":\"" << prefix_hashes[i] << "\","
+                         << "\"prefix_token_count\":" << row_pos+1 << ","
+                         << "\"query_group_first_pos\":" << pos << "}\n";
+                manifest << "{\"kind\":\"tensor\",\"step\":" << step
+                         << ",\"phase\":\"teacher_forced_logits\",\"seq\":0,\"position\":" << row_pos
+                         << ",\"layer\":-1,\"name\":\"logits\",\"dtype\":\"f32\","
+                         << "\"shape\":[" << n_vocab << "],\"path\":\"" << filename << "\"}\n";
+                references << "{\"step\":" << step
+                           << ",\"phase\":\"teacher_forced_logits\",\"seq\":0,\"position\":" << row_pos
+                           << ",\"label_token\":" << label
+                           << ",\"origin\":\"teacher_forced_reference\"}\n";
+                if (!manifest || !references) { failed = true; break; }
+            }
         }
         pos += nt;
     }
