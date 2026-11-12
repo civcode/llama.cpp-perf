@@ -205,6 +205,12 @@ For coverage, the GDN manifest now also logs `staged_source_cell=cell.src0`, ind
 
 Do not forge production `src` values, equate `src0` with the serialized logical row, weaken overflow/math/defaults or run long model performance A/B. The next narrow task is in Handoff 0021.
 
+## Iteration 0021: observer verification and next research milestone
+
+[Report 0021](../../.ai/reports/report-0021.md) validated actual recurrent serializer R/S/P payload bytes against the GDN observer through a natural FULL checkpoint restore and replay on the tested layers: CUDA0 layer 1 (including matching serialized pre-checkpoint and post-restore R/S/P bytes), HIP0 layer 12, and HIP1 layer 32. A real two-sequence copy/split via the public API confirmed that staged source `src0=0` feeds a distinct sequence's cell 1 while normalized serialized `src=1` and donor cell 0 remain correct. The mixed build and 56 focused Python tests passed; production defaults were unchanged. Runtime bad-row metadata injection and hypothetical stable `src != physical_cell` remain untested, but the latter is normalized by the observed `find_slot` lifecycle. Neither test establishes general graph/multisequence safety or resolves sparse-versus-dense logits/GDN differences.
+
+**Next research milestone:** measure sparse-versus-dense error on **independently specified reference next tokens** rather than relying only on matching natural sampled histories and rank comparisons. See [QSA sparse numerical fidelity protocol](QSA-SPARSE-NUMERICAL-FIDELITY.md). Chat AI added a research-only, manually invoked `llama-qsa-reference` example, a strict fixed-label NLL comparison tool and associated host tests. The teacher-forced runner processes exactly **four causal QSA queries per captured batch**, because one-token decoding would bypass the experimental sparse GQA12 Q4 kernel. It has not yet been compiled or tested on the agent's local GPUs. The experiment provides evidence for a future user-approved fidelity criterion; it **does not** define or authorize a numerical acceptance threshold, sparse default promotion, graph replay or end-to-end performance A/B.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
