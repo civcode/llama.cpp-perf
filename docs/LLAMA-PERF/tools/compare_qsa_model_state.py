@@ -195,6 +195,11 @@ def compare(dense: Path, other: Path, abs_tol: float = 0.0,
         for field in ("dtype", "shape"):
             if ta[field] != tb[field]:
                 raise ValueError(f"mismatched snapshot {field} at {tkey}")
+        # Physical cell and rollback-plane IDs can differ while representing
+        # the same logical state. The *logical cell position* must not.
+        if ta.get("logical_cell_pos") != tb.get("logical_cell_pos"):
+            raise ValueError(f"mismatched logical recurrent cell position at {tkey}: "
+                             f"{ta.get('logical_cell_pos')} vs {tb.get('logical_cell_pos')}")
         stats = diff_stats(values(dense, ta), values(other, tb), abs_tol, rel_tol)
         result["max_nmse"] = max(result["max_nmse"], stats["nmse_over_dense_energy"])
         result["max_abs"] = max(result["max_abs"], stats["max_abs"])
