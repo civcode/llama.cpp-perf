@@ -60,6 +60,8 @@ def validate_pairs(tasks: list[dict]) -> dict[str, list[dict]]:
                 a["changed_field"] != b["changed_field"]):
             raise ValueError(f"counterfactual pair metadata mismatch: {pair_id}")
         kinds_bands.add((a["kind"], a["target_band"]))
+        if a["prompt"].split("<LEDGER>\n", 1)[0] != b["prompt"].split("<LEDGER>\n", 1)[0]:
+            raise ValueError(f"counterfactual prefix differs: {pair_id}")
         a_rows, a_question = _ledger_and_question(a)
         b_rows, b_question = _ledger_and_question(b)
         if a_question != b_question or len(a_rows) != len(b_rows):

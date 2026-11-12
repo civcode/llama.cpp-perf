@@ -105,7 +105,8 @@ class CounterfactualPairTests(unittest.TestCase):
         self._write({("dense-b", first["id"]): "WRONG"})
         r = self._analysis()
         self.assertEqual(r["baseline_stably_solved_pairs"], 5)
-        self.assertFalse(r["per_pair"][0]["variants"][0]["dense_stable"])
+        pair = next(p for p in r["per_pair"] if p["pair_id"] == first["pair_id"])
+        self.assertFalse(pair["variants"][0]["dense_stable"])
 
     def test_sparse_prompt_token_disagreement_blocks_pair_success(self):
         first = self.tasks[0]
@@ -113,10 +114,11 @@ class CounterfactualPairTests(unittest.TestCase):
         r = self._analysis()
         self.assertEqual(r["baseline_stably_solved_pairs"], 6)
         self.assertEqual(r["sparse_solved_pairs"], 5)
-        self.assertFalse(r["per_pair"][0]["variants"][0]["comparable"])
+        pair = next(p for p in r["per_pair"] if p["pair_id"] == first["pair_id"])
+        self.assertFalse(pair["variants"][0]["comparable"])
         self.assertEqual(r["sparse_pair_regressions"], 0)
-        self.assertIsNone(r["per_pair"][0]["sparse_pair_solved"])
-        self.assertFalse(r["per_pair"][0]["comparable_pair"])
+        self.assertIsNone(pair["sparse_pair_solved"])
+        self.assertFalse(pair["comparable_pair"])
 
     def test_modified_second_record_is_rejected(self):
         bad = json.loads(json.dumps(self.tasks))
@@ -129,6 +131,18 @@ class CounterfactualPairTests(unittest.TestCase):
         bad = json.loads(json.dumps(self.tasks))
         bad[0]["expected"]["value"] = "WRONG"
         with self.assertRaisesRegex(ValueError, "reference TAG mismatch"):
+            validate_pairs(bad)
+
+    def test_duplicate_variant_is_rejected(self):
+        bad = json.loads(json.dumps(self.tasks))
+        bad[1]["variant"] = "a"
+        with self.assertRaisesRegex(ValueError, "duplicate pair variant"):
+            validate_pairs(bad)
+
+    def test_changed_prefix_is_rejected(self):
+        bad = json.loads(json.dumps(self.tasks))
+        bad[1]["prompt"] = bad[1]["prompt"].replace("Use only", "Ignore", 1)
+        with self.assertRaisesRegex(ValueError, "prefix"):
             validate_pairs(bad)
 
     def test_missing_pair_variant_is_rejected(self):
