@@ -2710,7 +2710,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 // score/top-k/mask inputs. It runs after GPU TOP_K or TOP_K_MASK completes
 // on the *same stream*. Do not use these synchronized captures for timing.
 static void ggml_cuda_qsa_topk_trace(ggml_backend_cuda_context & ctx, const ggml_tensor * dst) {
-    const char * dir = std::getenv("GGML_QSA_TOPK_TRACE_DIR");
+    static const char * dir = std::getenv("GGML_QSA_TOPK_TRACE_DIR");
     if (!dir) return;
     if (!std::getenv("GGML_QSA_MASK_AUDIT")) {
         GGML_ABORT("GGML_QSA_TOPK_TRACE_DIR requires GGML_QSA_MASK_AUDIT to disable GPU graphs");
@@ -2768,6 +2768,10 @@ static void ggml_cuda_qsa_topk_trace(ggml_backend_cuda_context & ctx, const ggml
             ctx.device, kind, group, is_mask ? (long long) dst->ne[0] : -1LL,
             (long long) score->ne[0], (long long) topk->ne[0], (long long) score->ne[1]);
 
+    // Bound aggregate output across both top-k and fused-mask capture kinds,
+    // not only individual blobs, so a misconfigured diagnostic cannot fill a disk.
+    static std::atomic<size_t> total_bytes{0};
+    constexpr size_t max_total_bytes = size_t(512)*1024*1024;
     const ggml_tensor * parts[] = {score, topk, blocks, extra};
     const char * names[] = {"score", "topk", "blocks", "extra"};
     for (int i = 0; i < 4; ++i) {
@@ -2776,6 +2780,9 @@ static void ggml_cuda_qsa_topk_trace(ggml_backend_cuda_context & ctx, const ggml
         const size_t nbytes = ggml_nbytes(t);
         if (!t->data || nbytes == 0 || nbytes > size_t(32)*1024*1024) {
             GGML_ABORT("QSA_TOPK_TRACE tensor exceeds 32 MiB individual bound");
+        }
+        if (total_bytes.fetch_add(nbytes) > max_total_bytes - nbytes) {
+            GGML_ABORT("QSA_TOPK_TRACE exceeds 512 MiB aggregate output bound");
         }
         std::vector<unsigned char> bytes(nbytes);
         CUDA_CHECK(cudaMemcpyAsync(bytes.data(), t->data, nbytes, cudaMemcpyDeviceToHost, ctx.stream()));
