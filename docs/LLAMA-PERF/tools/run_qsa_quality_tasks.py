@@ -40,14 +40,14 @@ def sha256(data: bytes) -> str:
 
 def load_tasks(path: Path) -> tuple[str, list[dict]]:
     data = path.read_bytes()
-    if not 1 <= len(data) <= 3 * 1024 * 1024:
-        raise ValueError("task manifest exceeds 3 MiB or is empty")
+    if not 1 <= len(data) <= 12 * 1024 * 1024:
+        raise ValueError("task manifest exceeds 12 MiB or is empty")
     obj = json.loads(data)
     if not isinstance(obj, dict) or obj.get("version") != 1 or not isinstance(obj.get("tasks"), list):
         raise ValueError("expected version-1 task manifest")
     tasks = obj["tasks"]
-    if not 1 <= len(tasks) <= 12:
-        raise ValueError("expected 1..12 tasks")
+    if not 1 <= len(tasks) <= 36:
+        raise ValueError("expected 1..36 tasks")
     seen = set()
     for t in tasks:
         if not isinstance(t, dict):
