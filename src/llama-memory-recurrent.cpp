@@ -872,6 +872,21 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
         reference.selected[2] = p_l[chosen];
     }
 
+    // Optionally capture only one R/S/P layer to make source-copy/restore
+    // coverage tests genuinely small, while verifying serializer ranges for
+    // *all* tensors. Flag-unset behavior still captures all layers.
+    int observe_layer = -1;
+    if (const char * option = std::getenv("LLAMA_QSA_GDN_LAYER_FILTER")) {
+        char * end = nullptr;
+        const long chosen = std::strtol(option, &end, 10);
+        if (!end || *end != '\0' || chosen < 0 || chosen >= (long) r_l.size() ||
+            !r_l[chosen] || !s_l[chosen]) return false;
+        observe_layer = (int) chosen;
+    }
+    if (selected_layer >= 0 && observe_layer >= 0 && selected_layer != observe_layer) {
+        return false;
+    }
+
     state_write(reference, seq_id, 0);
     if (!reference.valid || reference.ranges.empty()) return false;
     if (selected_layer >= 0 &&
@@ -958,6 +973,9 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
                 ok = false; break;
             }
             reference.ranges.erase(ref);
+            if (observe_layer >= 0 && (int) il != observe_layer) {
+                continue;
+            }
             if (offset + bytes > ggml_nbytes(t) ||
                 accumulated_bytes.fetch_add(bytes) > total_limit - bytes) {
                 ok = false; break;
