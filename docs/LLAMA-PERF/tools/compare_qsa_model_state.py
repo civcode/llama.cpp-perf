@@ -47,6 +47,8 @@ def tensor_key(r: dict) -> tuple:
 
 
 def read_manifest(path: Path) -> tuple[dict, dict]:
+    if path.stat().st_size > 32*1024*1024:
+        raise ValueError(f"manifest exceeds 32 MiB: {path}")
     events = {}
     tensors = {}
     count = 0
@@ -56,8 +58,8 @@ def read_manifest(path: Path) -> tuple[dict, dict]:
             if not line.strip():
                 continue
             count += 1
-            if count > 1024:
-                raise ValueError(f"manifest exceeds 1024 records: {path}")
+            if count > 16384:
+                raise ValueError(f"manifest exceeds 16384 records: {path}")
             try:
                 record = json.loads(line)
                 if not isinstance(record, dict):
