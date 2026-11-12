@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <initializer_list>
 
 using ggml_cuda_qsa_gqa12_layer_filter::decision;
 using ggml_cuda_qsa_gqa12_layer_filter::evaluate;
