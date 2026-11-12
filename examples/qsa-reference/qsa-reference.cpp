@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iterator>
 #include <limits>
@@ -84,10 +85,10 @@ int main(int argc, char ** argv) {
     }
 
     const std::string out(out_path);
-    std::ifstream prior(out + "/manifest.jsonl");
-    std::ifstream prior_labels(out + "/references.jsonl");
-    if (prior.good() || prior_labels.good()) {
-        std::fprintf(stderr, "Refusing to overwrite existing reference manifest\n");
+    std::error_code dir_error;
+    if (!std::filesystem::is_directory(out, dir_error) || dir_error ||
+        !std::filesystem::is_empty(out, dir_error) || dir_error) {
+        std::fprintf(stderr, "Reference output must be an existing empty directory\n");
         return 2;
     }
 
@@ -136,8 +137,8 @@ int main(int argc, char ** argv) {
     // Keep the user's chosen n_ctx / KV precision / batch and GPU split.
     // This is a correctness diagnostic, not a prefill timing benchmark.
     const uint32_t n_batch = cparams.n_batch;
-    if (n_batch < 4) {
-        std::fprintf(stderr, "Reference runner requires n_batch >= 4 for Q=4 QSA\n");
+    if (n_batch < 4 || cparams.n_ubatch < 4) {
+        std::fprintf(stderr, "Reference runner requires n_batch and n_ubatch >= 4 for Q=4 QSA\n");
         llama_model_free(model);
         return 3;
     }
@@ -150,6 +151,12 @@ int main(int argc, char ** argv) {
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         std::fprintf(stderr, "Cannot initialize context\n");
+        llama_model_free(model);
+        return 3;
+    }
+    if (llama_n_ubatch(ctx) < 4) {
+        std::fprintf(stderr, "Actual physical batch size is too small for Q=4 QSA\n");
+        llama_free(ctx);
         llama_model_free(model);
         return 3;
     }
