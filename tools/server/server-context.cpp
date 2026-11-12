@@ -4996,6 +4996,9 @@ private:
             const size_t n_draft = slot.spec_draft.size();
 
             GGML_ASSERT(n_draft > 0);
+            const bool use_ckpt_tgt =
+                ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
+                (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_draft > llama_n_rs_seq(ctx_tgt));
             // Separate from the existing logits manifest, but with the same
             // actual target/draft token histories. Nothing is sampled or forced.
             static unsigned qsa_gdn_groups = 0;
@@ -5030,6 +5033,7 @@ private:
                     {"seq", slot.id}, {"position", gdn_position},
                     {"target_ids", gdn_input_history}, {"draft_ids", gdn_draft_ids},
                     {"accepted", accepted}, {"rollback", rollback},
+                    {"rollback_mode", rollback ? (use_ckpt_tgt ? "checkpoint_restore" : "snapshot") : "none"},
                     {"replay", slot.spec_is_replay}};
                 std::ofstream manifest(std::string(gdn_dir) + "/manifest.jsonl", std::ios::app);
                 if (!manifest) GGML_ABORT("QSA GDN observer cannot open manifest");
@@ -5134,11 +5138,8 @@ private:
                     ++logits_groups;
                 }
 
-                // the recurrent snapshots are only guaranteed for batches of up to n_rs_seq + 1 tokens, so a longer draft uses its checkpoint
-                const bool use_ckpt_tgt =
-                    ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
-                    (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_draft > llama_n_rs_seq(ctx_tgt));
-
+                // the recurrent snapshots are only guaranteed for batches of up to n_rs_seq + 1 tokens;
+                // use_ckpt_tgt was computed before the diagnostic checkpoints.
                 // check for partial draft acceptance
                 if (n_rollback > 0) {
                     if (use_ckpt_tgt) {
