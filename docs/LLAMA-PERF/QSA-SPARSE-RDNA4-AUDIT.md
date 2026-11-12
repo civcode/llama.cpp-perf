@@ -176,6 +176,29 @@ python3 docs/LLAMA-PERF/tools/audit_qsa_gdn_coverage.py   /home/chris/workspace/
 
 **The audit verifies row *selection metadata*, not actual bytes.** Independently compare the chosen row bytes with a bounded recurrent-only serializer on an actual nontrivial source-cell and checkpoint-restore fixture before claiming those cases validated. Use a small 1–2-group test or temporary local fixture, not a repeated 5.3-GiB full-context snapshot. See Handoff 0020.
 
+## Iteration 0020 and narrow serializer-backed verification
+
+[Report 0020](../../.ai/reports/report-0020.md) validated a real natural **checkpoint-restore and subsequent replay**, in addition to Iteration 0019's recurrent snapshot rollback, and fixed a diagnostic-only replay classification error. In a short ngram-simple run, one rejected draft group caused FULL checkpoint restoration, followed by a fully accepted replay group. The mixed CUDA/HIP build and 48 Python tests passed. However, the measured physical/serialized source cell remained 0 and actual serialized **byte contents** were not independently compared. Existing sparse-vs-dense logits and GDN drift still make numerical correctness **NO-GO**.
+
+### Actual serialized payload comparison (opt-in, unverified on hardware)
+
+Chat AI added two independent **capture traversals** within `llama_memory_recurrent::qsa_debug_dump_state`:
+
+- Set `LLAMA_QSA_GDN_SERIAL_REF_LAYER=12` (replace 12 with any present R/S layer) to cause the **real recurrent `state_write` tensor-write callbacks** to produce raw R/S and available P payload files for just that layer. The companion `serializer-reference.jsonl` logs checkpoint, role, tensor type, serialization-selected byte offset, byte count and file path. The serializer visitor independently selects tensor ranges and writes their actual bytes rather than only recording requested offsets.
+- Set `LLAMA_QSA_GDN_LAYER_FILTER=12` to make the regular GDN observer dump **only the same layer**. It continues checking `state_write` range metadata for *every* layer, but skips full-state copies, substantially reducing diagnostic I/O. Both flags are disabled by default and accept only existing R/S layer IDs. If both are provided, they must select the same layer.
+- Combine with `LLAMA_QSA_GDN_DIR=<new external directory>` and `LLAMA_QSA_GDN_GROUP_LIMIT=1` for a bounded checkpoint, along with normal model audit settings if needed. No extra huge attention/indexer KV serialization is performed.
+- Compare `python3 docs/LLAMA-PERF/tools/compare_qsa_gdn_serialized_bytes.py <dir>/manifest.jsonl <dir>/serializer-reference.jsonl --require-identical`. The standard-library comparator checks every checkpoint's R/S/P reference coverage, matching exact tensor roles/types, recorded logical row offsets, bounded file lengths and **every raw byte**; it reports a first mismatched byte and fails if `--require-identical` is requested. `test_compare_qsa_gdn_serialized_bytes.py` supplies seven synthetic regressions.
+
+**Limitation:** both the serializer visitor and the observer read device data using `ggml_backend_tensor_get`. They follow independently selected tensor-offset/callback paths, but this is **not** a second independent GPU transfer implementation. Byte equality validates serializer-vs-observer agreement, not correct attention numerics or end-to-end equivalence. The new C++ code and Python tests have not yet run on the agent's host.
+
+### Staged input source versus serialized state source
+
+Source review of `llama_memory_recurrent::find_slot` identified a distinction that changes the appropriate test: during a shared-sequence split, `cell.src0` retains the *staged graph-input source* (used by `llama_memory_recurrent_context::s_copy`), while the algorithm normalizes `cell.src = cell_index` after preparing the slot. The normal stable-state serializer uses **`cell.src`**, not `cell.src0`. Thus a real sequence copy can involve cross-cell state **without leaving a nontrivial serialized `cell.src`** in the post-decode checkpoint. A test that requires `cell.src != physical_cell` after every normal decode may be unattainable by design.
+
+For coverage, the GDN manifest now also logs `staged_source_cell=cell.src0`, independently of `source_cell=cell.src`. The updated `audit_qsa_gdn_coverage.py` reports `nontrivial_staged_source_rows` and supports `--require-staged-source`. **This only proves the staged index is nontrivial**, not that a genuine shared-sequence copy happened or that the resulting device state bytes are correct. Validate provenance through a supported `seq_cp`/split fixture and compare the resulting R/S bytes to the expected source and serial reference.
+
+Do not forge production `src` values, equate `src0` with the serialized logical row, weaken overflow/math/defaults or run long model performance A/B. The next narrow task is in Handoff 0021.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
