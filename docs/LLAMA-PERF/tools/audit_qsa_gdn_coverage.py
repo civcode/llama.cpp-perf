@@ -29,9 +29,11 @@ def audit(path: Path) -> dict:
     grouped = defaultdict(list)
     count_source_ref = 0
     count_nontrivial = 0
+    count_staged = 0
     count_planes = 0
     modes = defaultdict(int)
     source_examples = []
+    staged_examples = []
     rolled_examples = []
 
     for tkey, t in tensors.items():
@@ -39,12 +41,17 @@ def audit(path: Path) -> dict:
             raise ValueError(f"unexpected non-GDN tensor: {tkey}")
         cell = _integer(t, "physical_cell")
         src = _integer(t, "source_cell")
+        staged = t.get("staged_source_cell")
+        if staged is not None and (type(staged) is not int):
+            raise ValueError(f"invalid staged source metadata: {tkey}")
         cache_size = _integer(t, "cache_size")
         row = _integer(t, "logical_source_row")
         plane = _integer(t, "rs_plane")
         logical_pos = _integer(t, "logical_cell_pos")
         if (cache_size < 1 or cache_size > 65536 or cell < 0 or cell >= cache_size
-                or src < -1 or src >= cache_size or plane < 0 or plane > 256
+                or src < -1 or src >= cache_size or
+                (staged is not None and (staged < -1 or staged >= cache_size)) or
+                plane < 0 or plane > 256
                 or logical_pos < 0):
             raise ValueError(f"invalid GDN cache metadata: {tkey}")
         expected = plane*cache_size + (src if src >= 0 else cell)
@@ -65,6 +72,16 @@ def audit(path: Path) -> dict:
                     "role": tkey[5], "physical_cell": cell, "source_cell": src,
                     "rs_plane": plane, "logical_source_row": row,
                 })
+        # src0 is the *staged graph-input source*, not the serialized
+        # logical-current-state row (which uses src). Do not conflate them.
+        if staged is not None and staged >= 0 and staged != cell:
+            count_staged += 1
+            if len(staged_examples) < 4:
+                staged_examples.append({
+                    "step": tkey[0], "phase": tkey[1], "layer": tkey[4],
+                    "role": tkey[5], "physical_cell": cell,
+                    "staged_source_cell": staged, "source_cell": src,
+                })
         if plane > 0:
             count_planes += 1
             if len(rolled_examples) < 4:
@@ -73,7 +90,7 @@ def audit(path: Path) -> dict:
                     "layer": tkey[4], "role": tkey[5],
                     "rs_plane": plane, "logical_source_row": row,
                 })
-        grouped[tkey[:4]].append((tkey, (cell, src, cache_size, row, plane, logical_pos)))
+        grouped[tkey[:4]].append((tkey, (cell, src, staged, cache_size, row, plane, logical_pos)))
 
     if set(grouped) != set(events):
         raise ValueError("GDN tensor groups do not match event checkpoints")
@@ -103,6 +120,8 @@ def audit(path: Path) -> dict:
         "tensor_rows": len(tensors),
         "source_cell_referenced_rows": count_source_ref,
         "nontrivial_source_indirection_rows": count_nontrivial,
+        "nontrivial_staged_source_rows": count_staged,
+        "has_nontrivial_staged_source": count_staged > 0,
         "nonzero_rollback_plane_rows": count_planes,
         "has_nontrivial_source_indirection": count_nontrivial > 0,
         "has_pending_rollback_plane": count_planes > 0,
@@ -113,6 +132,7 @@ def audit(path: Path) -> dict:
             for (phase, mode), count in sorted(modes.items())
         ],
         "source_indirection_examples": source_examples,
+        "staged_source_examples": staged_examples,
         "rollback_plane_examples": rolled_examples,
         "note": ("Coverage of source indirection and checkpoint restore must be "
                  "demonstrated in live or controlled tests; metadata validation alone "
@@ -124,6 +144,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--require-source-indirection", action="store_true")
+    parser.add_argument("--require-staged-source", action="store_true")
     parser.add_argument("--require-checkpoint-restore", action="store_true")
     args = parser.parse_args()
     try:
@@ -132,6 +153,8 @@ def main() -> int:
         parser.error(str(exc))
     print(json.dumps(result, indent=2))
     if args.require_source_indirection and not result["has_nontrivial_source_indirection"]:
+        return 2
+    if args.require_staged_source and not result["has_nontrivial_staged_source"]:
         return 2
     if args.require_checkpoint_restore and not result["post_rollback_checkpoint_restore_events"]:
         return 2
