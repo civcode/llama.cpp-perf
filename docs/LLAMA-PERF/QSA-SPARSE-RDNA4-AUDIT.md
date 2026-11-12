@@ -79,6 +79,40 @@ Use **fresh** graph-disabled dense and sparse runs, each with `GGML_QSA_MASK_AUD
 
 The FP64 result is a high-precision mathematical **reference**, not proof of bitwise GPU behavior: even a closer match does not establish acceptable model-logit or GDN-state correctness, which must be measured separately. Do not promote experimental sparse attention or run long model performance A/B until those gates pass. See Handoff 0017.
 
+## Iteration 0017 FP64 result and layer-15/logical-state diagnostics
+
+[Report 0017](../../.ai/reports/report-0017.md) verified the real Qwen3.8-Flash-Next layer-11 attention replay on **byte-identical Q(F32), K/V(F16), F16 mask and scale 0.0625**. The sparse kernel had lower overall FP64-reference NMSE (4.44979e-7) than dense tile (9.99118e-7), but sparse had slightly higher largest absolute difference (0.00825457 vs dense 0.00801139). Sparse-vs-dense NMSE was 8.97579e-7. **No sparse kernel correctness defect was confirmed**; this is a local mathematical-reference comparison, not a validated model tolerance. Layer-15 selection cutoff, fixed-token logits and recurrent GDN state remain unmeasured. Do not run full-model performance A/B or promote sparse by default.
+
+Chat AI subsequently added these **disabled-by-default, not yet GPU-tested** diagnostics:
+
+### A. Bounded HIP0 layer-15 score/top-k and pool-map capture
+
+With the existing `GGML_QSA_MASK_AUDIT=1000` (which disables GPU graph replay), set `GGML_QSA_TOPK_TRACE_DIR=<unique-external-directory>` and optionally `GGML_QSA_TOPK_TRACE_LIMIT=64` (1..128 per capture kind). When set, the Qwen4-exp graph names layer-15 top-k nodes `qsa_topk_il15` and fused mask nodes `qsa_topk_mask_il15`. The HIP0 CUDA-backend dispatcher synchronously writes raw little-endian `score` (F32), `topk` (I32), and, **for the fused top-k mask path**, `blocks` (I32 pool→KV member map) and `extra` (I32 tail cells). Each part is individually bounded to 32 MiB; logs include backend/device, kind, group ordinal, KV, pool count, top-k count, query count, tensor type, shape, strides and path. This is intentionally synchronous **diagnostic-only**; do not time these runs. A nonfused TOP_K-only trace can compare selected pool IDs and score margins but cannot map them to selected KV cells.
+
+Use separate fresh dense A, dense B and sparse process directories and compare:
+
+- `python3 docs/LLAMA-PERF/tools/test_compare_qsa_topk_trace.py` — six host-only synthetic tests for score margins, swapped pool IDs, pool→KV mapping, nonfused fallback, invalid scores and malformed dumps.
+- `python3 docs/LLAMA-PERF/tools/compare_qsa_topk_trace.py dense-A.log dense-B.log --require-identical-selections > topk-control.json`
+- `python3 docs/LLAMA-PERF/tools/compare_qsa_topk_trace.py dense-A.log sparse.log > topk-sparse.json`
+
+The comparator compares unordered selected pool *sets*, per-query cutoff margins, changed pool scores and the actual mapped KV cells (including changes when the selected pool IDs are unchanged but their membership maps differ). An all-equal pool-set result is **not** proof that scores, caches or logits are bitwise equal. Group ordinals are per-device/per-kind, **not** logical global step identities: correlate the final prompt batch with the server trace.
+
+### B. Strict bounded logits / recurrent-state comparison contract
+
+`docs/LLAMA-PERF/tools/compare_qsa_model_state.py` is a host-only standard-library tool for data produced by a **future opt-in C++ observer**. It does **not yet collect logits or GDN state**. `test_compare_qsa_model_state.py` provides seven synthetic tests. Its input is a separate JSONL manifest per dense A/dense B/sparse run, with strictly increasing `step` as a **checkpoint ordinal**, not generation count. Each logical event records exact `phase, seq, position, target_ids, draft_ids, accepted, rollback`; each tensor record specifies the same logical event, `layer`, tensor role `logits|gdn_r|gdn_s|gdn_p`, little-endian `dtype=f32|f16|bf16`, `shape`, and external binary `path`. Physical cell and rollback plane can be logged for attribution but are deliberately *not* logical matching keys. Each raw tensor file is bounded to 64 MiB; manifest to 1024 records. Logits refer to **pre-sampling** target outputs.
+
+An example *format only* (not actual measured model data):
+
+```jsonl
+{"kind":"event","step":0,"phase":"after_prompt","seq":0,"position":33024,"target_ids":[71],"draft_ids":[],"accepted":[],"rollback":false}
+{"kind":"tensor","step":0,"phase":"after_prompt","seq":0,"position":33024,"layer":-1,"name":"logits","dtype":"f32","shape":[1024],"path":"logits.bin"}
+{"kind":"tensor","step":0,"phase":"after_prompt","seq":0,"position":33024,"layer":11,"name":"gdn_s","dtype":"f16","shape":[128],"path":"gdn-s.bin","physical_cell":17,"rs_plane":0}
+```
+
+Compare dense A vs B first; then A vs sparse using `python3 docs/LLAMA-PERF/tools/compare_qsa_model_state.py <dense.jsonl> <other.jsonl>` (optional `--abs-tol` and `--rel-tol` are **reporting thresholds only**). The comparator **fails closed** if token IDs, accepted/rollback decisions or checkpoint identities differ; it verifies snapshot shapes and finite content and reports max absolute, relative, normalized errors and first differing elements. The observer itself must synchronize device reads, resolve **logical** GDN row and pending rollback snapshot plane correctly, and avoid serializing an entire long-context KV cache.
+
+Neither new diagnostic nor its tests have been executed in Chat AI's local workspace: GitHub DNS access is unavailable, and the connected code was reviewed but not locally compiled. See Handoff 0018 for mandatory first-step validation, bounded GPU evidence and numerical go/no-go.
+
 ## Why investigate sparse attention?
 
 Report 0010 measured the ordered target-synchronization waits at 32K vs 98K:
