@@ -67,6 +67,11 @@ public:
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
+    // Debug-only synchronized copy of the active *logical* cell R/S/P state
+    // and matching tensor records; never called during normal inference.
+    bool qsa_debug_dump_state(llama_seq_id seq_id, const char * dir, unsigned step,
+                              const char * phase, llama_pos position) const;
+
     uint32_t head = 0; // the location where the batch will be placed in the cache (see find_slot())
     uint32_t size = 0; // total number of cells, shared across all sequences
     uint32_t used = 0; // used cells (i.e. at least one seq_id)
