@@ -119,6 +119,13 @@ def compare(observer_manifest: Path, serializer_manifest: Path,
 
     if not result["reference_rows"] or len(layers) != 1:
         raise ValueError("expected at least one reference row from exactly one layer")
+    layer = next(iter(layers))
+    for event in events:
+        captured = {key[-1] for key in tensors if key[:4] == event and key[4] == layer}
+        emitted = {key[-1] for key in seen if key[:4] == event and key[4] == layer}
+        if not {"gdn_r", "gdn_s"}.issubset(captured) or captured != emitted:
+            raise ValueError(f"incomplete serialized reference coverage at {event}: "
+                             f"captured={sorted(captured)}, emitted={sorted(emitted)}")
     result["observed_layers"] = sorted(layers)
     return result
 
