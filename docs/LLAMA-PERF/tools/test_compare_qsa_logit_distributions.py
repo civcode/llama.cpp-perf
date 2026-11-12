@@ -69,7 +69,7 @@ class DistributionsTest(unittest.TestCase):
     def test_reject_unbounded_row_count(self):
         a = make(self.root, "a")
         b = make(self.root, "b")
-        with self.assertRaisesRegex(ValueError, "exceed"):
+        with self.assertRaisesRegex(ValueError, "max rows"):
             compare(a, b, max_rows=0)  # Invalid bound itself fails closed.
 
     def test_reject_nonfinite_logits(self):
