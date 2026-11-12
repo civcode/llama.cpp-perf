@@ -145,6 +145,12 @@ python3 docs/LLAMA-PERF/tools/compare_qsa_model_state.py dense-A-gdn/manifest.js
 python3 docs/LLAMA-PERF/tools/compare_qsa_model_state.py dense-A-gdn/manifest.jsonl sparse-gdn/manifest.jsonl
 ```
 
+### Full-vocabulary logit distribution analysis
+
+New host-only `docs/LLAMA-PERF/tools/compare_qsa_logit_distributions.py` reads the **existing, real full-vocabulary** `LLAMA_QSA_LOGITS_DIR` manifests. It requires exact equality of recorded token histories, draft candidates, acceptance/rollback, replay and sequence/position checkpoint IDs and processes at most 64 F32 vocabulary rows by default (max 256). It reports the number of top-1/top-5 set changes, dense and other top-1 probabilities, KL divergence in both directions, Jensen–Shannon divergence (nats), and centered-logit error after removing an irrelevant constant shift. The tool does not require NumPy, infer ground-truth token labels or certify model correctness; it cannot replace recurrent-state validation or a task-quality evaluation. New `test_compare_qsa_logit_distributions.py` includes six synthetic tests. These tools were committed but **not executed in the Chat AI workspace**.
+
+Use `python3 docs/LLAMA-PERF/tools/compare_qsa_logit_distributions.py dense-A-logits/manifest.jsonl dense-B-logits/manifest.jsonl` for repeat-control and then the same command with the sparse manifest for the first probability-level assessment.
+
 **Caution:** A completed GDN capture must first be validated independently against recurrent-only serialization, and dense A/B repeat stability must be shown. The point-in-time `post_rollback` snapshot is not proof that subsequent replay/reprocessing state was correct. The observer only covers one text slot and first 16 verification groups; production mixed sequences and GPU graph replay remain unverified. See Handoff 0019.
 
 ## Why investigate sparse attention?
