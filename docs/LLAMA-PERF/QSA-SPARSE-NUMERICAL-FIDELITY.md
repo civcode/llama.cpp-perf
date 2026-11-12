@@ -16,13 +16,15 @@ The absence of top-1 flips in 64 positions is **not** a numerical acceptance thr
 
 ## Small reference-token experiment
 
-Implement a strictly bounded, disabled-by-default C++ target-decode fixture or equivalent observer that teacher-forces known next tokens, emitting a complete F32 logits vector **before any sampling** for each labelled position, with consistent step/phase/seq/position, exact input IDs, target model, weights and F16 KV settings. The existing LLAMA_QSA_LOGITS_DIR observer captures natural speculative target-verification logits; do **not** label it teacher-forced unless the sequence was actually constrained.
+Chat AI added a manually invoked C++ target-only fixture, examples/qsa-reference/qsa-reference.cpp, using the normal llama batch/decode API. It teacher-forces known next tokens and emits a complete F32 logits vector **before any sampling** for each labelled position, with consistent step/phase/seq/position, prefix token fingerprints, target model, weights and F16 KV settings. Each captured group contains **exactly four causal query tokens (Q=4)**; one-token-at-a-time evaluation would not exercise the experimental sparse GQA12 Q4 kernel. The selected number of reference logits rows must be a multiple of four, 4..64 (default 32). The existing LLAMA_QSA_LOGITS_DIR observer captures natural speculative target-verification logits; do **not** label it teacher-forced unless the sequence was actually constrained.
 
 Use an independently chosen reference text/token fixture and document its provenance, same tokenizer and token schedule for dense A/dense B/sparse. Supply a separate JSONL label record with fields step, phase, seq, position, label_token and origin. The origin must be heldout_reference or teacher_forced_reference. Do not take gold labels from the dense model's predicted IDs, sparse predictions or speculative acceptance. Align labels with **the next token actually scored by each logits row**, not just a similar position number.
 
 Example single reference record (illustrative, not real data):
 
     {"step":0,"phase":"verify_logits","seq":0,"position":32809,"label_token":1234,"origin":"heldout_reference"}
+
+The runner uses an externally supplied held-out text file and an existing empty output directory; environment flags LLAMA_QSA_REFERENCE_TEXT_FILE, LLAMA_QSA_REFERENCE_OUT_DIR and LLAMA_QSA_REFERENCE_ROWS determine them. Use the normal model CLI options (including GPU devices, tensor-split, n_ctx and KV types) to reproduce the target configuration. The fixture emits manifest.jsonl and references.jsonl plus raw logits-N.f32 files, with no speculative sampler involved. It is built via the llama-qsa-reference CMake example target, and must be locally compiled and checked for correct Q=4 activation by the Coding Agent.
 
 The host-only tools/compare_qsa_reference_nll.py checks strict event/candidate-history alignment and exact reference label coverage; it reports signed sparse-minus-dense next-token NLL and reference token ranks, hit counts and outliers without a hard-coded PASS threshold. Run test_compare_qsa_reference_nll.py and other focused host suites locally first.
 
