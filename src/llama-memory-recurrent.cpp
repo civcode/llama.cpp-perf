@@ -10,6 +10,7 @@
 #include <cassert>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -823,18 +824,59 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
     // this sequence. Reject multi-cell sequences or any disagreement rather
     // than silently treating a physical cell as the current logical state.
     struct range_writer : llama_io_write_i {
+        struct serialized_row {
+            bool present = false;
+            size_t offset = 0;
+            std::vector<uint8_t> bytes;
+        };
         std::map<const ggml_tensor *, std::pair<size_t, size_t>> ranges;
+        const ggml_tensor * selected[3]{};
+        serialized_row serialized[3];
         bool valid = true;
         size_t count = 0;
         void write(const void *, size_t n) override { count += n; }
         void write_tensor(ggml_tensor * t, size_t off, size_t n) override {
             valid = valid && ranges.emplace(t, std::make_pair(off, n)).second;
             count += n;
+            for (int i = 0; i < 3; ++i) {
+                if (!selected[i] || selected[i] != t) continue;
+                if (serialized[i].present || n == 0 || n > size_t(8)*1024*1024) {
+                    valid = false;
+                    continue;
+                }
+                serialized[i].present = true;
+                serialized[i].offset = off;
+                serialized[i].bytes.resize(n);
+                // This read is invoked by *actual* state_write serialization,
+                // separately from the debug observer's own row copy below.
+                ggml_backend_tensor_get(t, serialized[i].bytes.data(), off, n);
+            }
         }
         size_t n_bytes() override { return count; }
     } reference;
+
+    // Capture actual tensor payloads emitted by the normal recurrent
+    // serialization traversal, but for just one selected layer. These are
+    // small opt-in reference files; never serialize the hybrid KV caches.
+    int selected_layer = -1;
+    if (const char * option = std::getenv("LLAMA_QSA_GDN_SERIAL_REF_LAYER")) {
+        char * end = nullptr;
+        const long chosen = std::strtol(option, &end, 10);
+        if (!end || *end != '\0' || chosen < 0 ||
+            chosen >= (long) r_l.size() || !r_l[chosen] || !s_l[chosen]) {
+            return false;
+        }
+        selected_layer = (int) chosen;
+        reference.selected[0] = r_l[chosen];
+        reference.selected[1] = s_l[chosen];
+        reference.selected[2] = p_l[chosen];
+    }
+
     state_write(reference, seq_id, 0);
     if (!reference.valid || reference.ranges.empty()) return false;
+    if (selected_layer >= 0 &&
+        (!reference.serialized[0].present || !reference.serialized[1].present ||
+         (reference.selected[2] && !reference.serialized[2].present))) return false;
 
     const uint32_t endian_probe = 1;
     if (*(const uint8_t *) &endian_probe != 1) return false;
@@ -842,6 +884,45 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
     // Full multi-layer states are large: 16 groups x 3 phases of this model
     // exceed 512 MiB. Still bounded and fail closed before each transfer.
     constexpr size_t total_limit = size_t(8)*1024*1024*1024;
+
+    if (selected_layer >= 0) {
+        char ref_manifest_path[4096];
+        const int used = snprintf(ref_manifest_path, sizeof(ref_manifest_path),
+                                  "%s/serializer-reference.jsonl", dir);
+        if (used < 0 || (size_t) used >= sizeof(ref_manifest_path)) return false;
+        FILE * ref_manifest = fopen(ref_manifest_path, "ab");
+        if (!ref_manifest) return false;
+        bool ref_ok = true;
+        const char * names[] = {"gdn_r", "gdn_s", "gdn_p"};
+        for (int kind = 0; kind < 3 && ref_ok; ++kind) {
+            if (!reference.selected[kind]) continue;
+            const auto & row = reference.serialized[kind];
+            char filename[256];
+            const int name_used = snprintf(filename, sizeof(filename),
+                    "serialized-%u-%s-l%d-%s.bin", step, phase, selected_layer, names[kind]);
+            char fullpath[4096];
+            const int path_used = snprintf(fullpath, sizeof(fullpath), "%s/%s", dir, filename);
+            if (name_used < 0 || (size_t) name_used >= sizeof(filename) ||
+                path_used < 0 || (size_t) path_used >= sizeof(fullpath)) {
+                ref_ok = false;
+                break;
+            }
+            FILE * output = fopen(fullpath, "wb");
+            if (!output) { ref_ok = false; break; }
+            const bool wrote = fwrite(row.bytes.data(), 1, row.bytes.size(), output) == row.bytes.size();
+            const bool closed = fclose(output) == 0;
+            if (!wrote || !closed) { ref_ok = false; break; }
+            if (fprintf(ref_manifest,
+                    "{\"kind\":\"serializer_reference\",\"step\":%u,\"phase\":\"%s\","
+                    "\"seq\":%d,\"position\":%d,\"layer\":%d,\"name\":\"%s\","
+                    "\"type\":\"%s\",\"offset\":%zu,\"bytes\":%zu,\"path\":\"%s\"}\n",
+                    step, phase, seq_id, position, selected_layer, names[kind],
+                    ggml_type_name(reference.selected[kind]->type), row.offset,
+                    row.bytes.size(), filename) < 0) ref_ok = false;
+        }
+        if (fclose(ref_manifest) != 0) ref_ok = false;
+        if (!ref_ok) return false;
+    }
 
     // Manifest events are written by the server *before* this function is
     // called. Each record is a different logical (checkpoint,layer,role) key.
