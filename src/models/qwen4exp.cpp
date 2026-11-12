@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdlib>
 
 // bad metadata must be catchable: GGML_ASSERT aborts the whole process
 static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
@@ -873,6 +874,11 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
     const int64_t n_top_pool = std::min<int64_t>(n_pool, hparams.indexer_top_k / kpool);
     ggml_tensor * top_k = ggml_top_k(ctx0, score, n_top_pool); // [n_top_pool, n_tokens], unordered
     cb(top_k, "indexer_top_k", il);
+    // A graph-stable layer name permits a bounded HIP score/top-k capture,
+    // without depending on allocator-generated node_NNN identifiers.
+    if (il == 15 && std::getenv("GGML_QSA_TOPK_TRACE_DIR")) {
+        ggml_set_name(top_k, "qsa_topk_il15");
+    }
 
     // flash attention requires an f16 mask
     const ggml_type type_mask = cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
@@ -886,6 +892,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
         ggml_tensor * sel  = ggml_top_k_mask(ctx0, keep, top_k, score, inp_kpool->pool_idxs, inp_kpool->tail_idxs); // [n_kv, n_tokens]
         res->add_fused_node({LLM_FUSED_OP_TOP_K_MASK, sel, il});
         cb(sel, "indexer_sel", il);
+        if (il == 15 && std::getenv("GGML_QSA_TOPK_TRACE_DIR")) {
+            ggml_set_name(sel, "qsa_topk_mask_il15");
+        }
 
         return sel;
     }
