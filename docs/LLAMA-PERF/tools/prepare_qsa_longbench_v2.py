@@ -77,9 +77,14 @@ def _build_prompt(row: dict) -> str:
 
 def make_manifest(source: Path, seed: int = 20261115, limit: int = 12,
                   min_context_bytes: int = 56000, max_prompt_bytes: int = 210000,
-                  difficulty: str = "easy") -> dict:
-    if not 0 <= seed < 2**32 or not 1 <= limit <= 12:
-        raise ValueError("seed must be uint32, limit 1..12")
+                  difficulty: str = "easy",
+                  exclude_ids: set[str] | None = None) -> dict:
+    if not 0 <= seed < 2**32 or not 1 <= limit <= 36:
+        raise ValueError("seed must be uint32, limit 1..36")
+    exclude_ids = set() if exclude_ids is None else exclude_ids
+    if (not isinstance(exclude_ids, set) or len(exclude_ids) > 503 or
+            any(not isinstance(x, str) or not x or len(x) > 128 for x in exclude_ids)):
+        raise ValueError("exclude_ids must be a bounded set of benchmark source IDs")
     if not 1 <= min_context_bytes <= max_prompt_bytes <= 245760:
         raise ValueError("invalid context/prompt length bounds")
     if difficulty not in ("easy", "hard", "any"):
@@ -116,6 +121,8 @@ def make_manifest(source: Path, seed: int = 20261115, limit: int = 12,
             raise ValueError(f"missing/oversized question for {sid}")
         if any(not _valid_text(row.get("choice_" + c), 8192) for c in CHOICES):
             raise ValueError(f"missing/oversized choice for {sid}")
+        if sid in exclude_ids:
+            continue
         if difficulty != "any" and row["difficulty"] != difficulty:
             continue
         context_len = len(row["context"].encode("utf-8"))
@@ -174,6 +181,7 @@ def make_manifest(source: Path, seed: int = 20261115, limit: int = 12,
         "source_name": SOURCE,
         "source_file_sha256": _file_hash(source),
         "seed": seed, "requested_difficulty": difficulty,
+        "excluded_source_ids": sorted(exclude_ids),
         "min_context_bytes": min_context_bytes,
         "max_prompt_bytes": max_prompt_bytes,
         "eligible_candidates": eligible,
@@ -185,8 +193,8 @@ def make_manifest(source: Path, seed: int = 20261115, limit: int = 12,
         ),
         "tasks": chosen,
     }
-    if len(json.dumps(out, ensure_ascii=False).encode("utf-8")) > 3*1024*1024:
-        raise ValueError("output task manifest exceeds 3 MiB runner bound")
+    if len(json.dumps(out, ensure_ascii=False).encode("utf-8")) > 12*1024*1024:
+        raise ValueError("output task manifest exceeds 12 MiB runner bound")
     return out
 
 
@@ -207,11 +215,32 @@ def main() -> int:
     parser.add_argument("--min-context-bytes", type=int, default=56000)
     parser.add_argument("--max-prompt-bytes", type=int, default=210000)
     parser.add_argument("--difficulty", choices=("easy", "hard", "any"), default="easy")
+    parser.add_argument("--exclude-manifest", type=Path,
+                        help="prior frozen task manifest; exclude all its LongBench source IDs")
     args = parser.parse_args()
     try:
+        excluded = set()
+        if args.exclude_manifest is not None:
+            previous_bytes = args.exclude_manifest.read_bytes()
+            if not 0 < len(previous_bytes) <= 12*1024*1024:
+                raise ValueError("prior task manifest missing or exceeds 12 MiB")
+            previous = json.loads(previous_bytes)
+            if not isinstance(previous, dict) or previous.get("source_name") != SOURCE:
+                raise ValueError("exclusion manifest must be a LongBench-v2 task manifest")
+            prior_tasks = previous.get("tasks")
+            if not isinstance(prior_tasks, list) or not 1 <= len(prior_tasks) <= 503:
+                raise ValueError("invalid prior LongBench-v2 task list")
+            for task in prior_tasks:
+                if (not isinstance(task, dict) or task.get("kind") != KIND or
+                        not isinstance(task.get("benchmark_id"), str) or
+                        not task.get("benchmark_id") or
+                        task.get("id") != "lb2-" + task["benchmark_id"] or
+                        task["benchmark_id"] in excluded):
+                    raise ValueError("invalid/duplicate previous benchmark ID")
+                excluded.add(task["benchmark_id"])
         manifest = make_manifest(
             args.source, args.seed, args.limit, args.min_context_bytes,
-            args.max_prompt_bytes, args.difficulty
+            args.max_prompt_bytes, args.difficulty, exclude_ids=excluded
         )
         with args.out.open("x", encoding="utf-8") as handle:
             json.dump(manifest, handle, ensure_ascii=False, indent=2)
@@ -221,6 +250,7 @@ def main() -> int:
     print(json.dumps({
         "tasks": len(manifest["tasks"]),
         "eligible": manifest["eligible_candidates"],
+        "excluded_ids": len(manifest["excluded_source_ids"]),
         "domains": manifest["selected_domains"],
         "seed": manifest["seed"], "out": str(args.out)
     }, indent=2))
