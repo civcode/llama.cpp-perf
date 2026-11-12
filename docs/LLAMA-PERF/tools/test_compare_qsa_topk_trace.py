@@ -103,7 +103,8 @@ class ScoreTopkCompareTest(unittest.TestCase):
         sparse = write_run(self.root, "sparse", mismatched_map=True)
         result = compare(dense, sparse)
         self.assertEqual(result["queries_with_changed_pool_selections"], 0)
-        self.assertEqual(result["queries_with_changed_kv_selections"], 1)
+        # Both query rows select pool 1, so both inherit its changed KV map.
+        self.assertEqual(result["queries_with_changed_kv_selections"], 2)
         self.assertEqual(result["groups_with_changed_selections"], 1)
         first = result["first_changed_selection"]
         self.assertEqual(first["kv_cells_removed_first"], [4])
