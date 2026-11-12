@@ -37,3 +37,31 @@ Report dense A/B variation, row-aligned reference-token NLL difference, top-1 re
 **No numerical/quality threshold is established here.** The user must explicitly approve a consequential model-fidelity and task-quality acceptance criterion. Even if sparse NLL improves on a tiny sample, it does not establish normal MTP, GPU graphs, mixed-sequence or overflow correctness.
 
 If predictive fidelity degrades at near-tied selection cutoffs, another reversible experiment is an opt-in arithmetic variant aiming closer to the dense accumulation behavior, followed by the same fixed-token reference regression. Do not silently choose a tolerance or claim a production speedup from synthetic QSA operator benchmarks.
+
+
+## Iteration 0022 pilot and next multi-source evaluation
+
+[Report 0022](../../.ai/reports/report-0022.md) validated the four-query teacher-forced target runner and confirmed actual HIP GQA12 sparse Q4 activation. On 32 scored positions from one **synthetic repetitive performance text, not a held-out quality benchmark**, dense A/B F32 logits were bitwise identical. Sparse mean reference next-token NLL was 1.702720 versus dense 1.705491 nats (sparse minus dense -0.00277154). Sixteen positions improved and sixteen regressed; the largest sparse improvement was -0.103140 nats, the largest regression +0.053949. Both had 22/32 reference top-1 hits, no top-1 choices changed, four top-5 sets changed, and maximum JS divergence was 0.00345615 nats. In the short context, KV=256 did not trigger the sparse selector; that is **not** evidence for sparse fidelity.
+
+This is an **exploratory, highly correlated** sample, not a quality equivalence decision. A per-document comparison must not treat the 32 closely spaced token predictions as 32 independent tasks.
+
+New tool: docs/LLAMA-PERF/tools/summarize_qsa_reference_fixtures.py, with test_summarize_qsa_reference_fixtures.py. Supply a private JSON fixture list with fields id, origin, text_file, dense_a, dense_b and sparse. Each run directory must contain manifest.jsonl, references.jsonl and complete F32 raw logits files from the four-query runner. The origin should be independent_reference_text or synthetic_performance_fixture; the former only means independent from the earlier performance fixture, **not demonstrably absent from the model's training data**. The tool detects repeated text SHA-256 hashes, requires raw-bitwise dense A/B logits equality (including signed zeros), requires identical reference label files from all runs, strict event alignment and complete Q=4 groups, then reports per-document signed NLL, macro-mean (equal weight per document), micro-mean (weighted by scored token count), top-1 choice changes and wins/losses. No pass threshold, confidence claim or user approval is built in.
+
+Example outside-Git fixture JSON:
+
+    {
+      "fixtures": [
+        {
+          "id": "document-01",
+          "origin": "independent_reference_text",
+          "text_file": "/external/source-01.txt",
+          "dense_a": "/external/doc01/dense-a",
+          "dense_b": "/external/doc01/dense-b",
+          "sparse": "/external/doc01/sparse"
+        }
+      ]
+    }
+
+Run the host suite with python3 docs/LLAMA-PERF/tools/test_summarize_qsa_reference_fixtures.py and generate a JSON report with python3 docs/LLAMA-PERF/tools/summarize_qsa_reference_fixtures.py /external/fixtures.json. Neither new script has been executed on the GPU host by Chat AI.
+
+Next take a small number of genuinely distinct independently sourced texts (not the synthetic context-performance fixture), one relevant long-context case where possible, and no more than 32 reference-scored tokens per text in dense A/B/sparse Q=4 runs. Disclose source provenance and whether any material is truly training-held-out; do not fabricate held-out status. Any consequential task-quality/accuracy tolerance requires explicit user approval. Numerical equivalence remains NO-GO, sparse off by default, no graph-safety or full-model throughput claim.
