@@ -820,6 +820,10 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
             (cell.src >= 0 ? (uint32_t) cell.src : (uint32_t) tail);
     if (src_row >= (size_t) size * (1 + n_rs_seq)) return false;
 
+    // Count reference and observer transfers together, including filtered runs.
+    static std::atomic<size_t> accumulated_bytes{0};
+    constexpr size_t total_limit = size_t(8)*1024*1024*1024;
+
     // Independently ask the recurrent serializer which tensor ranges represent
     // this sequence. Reject multi-cell sequences or any disagreement rather
     // than silently treating a physical cell as the current logical state.
@@ -834,13 +838,17 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
         serialized_row serialized[3];
         bool valid = true;
         size_t count = 0;
+        std::atomic<size_t> * budget = nullptr;
+        size_t limit = 0;
         void write(const void *, size_t n) override { count += n; }
         void write_tensor(ggml_tensor * t, size_t off, size_t n) override {
             valid = valid && ranges.emplace(t, std::make_pair(off, n)).second;
             count += n;
             for (int i = 0; i < 3; ++i) {
                 if (!selected[i] || selected[i] != t) continue;
-                if (serialized[i].present || n == 0 || n > size_t(8)*1024*1024) {
+                if (serialized[i].present || n == 0 || n > size_t(8)*1024*1024 ||
+                    !t->data || off > ggml_nbytes(t) || n > ggml_nbytes(t) - off ||
+                    !budget || n > limit || budget->fetch_add(n) > limit - n) {
                     valid = false;
                     continue;
                 }
@@ -854,6 +862,8 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
         }
         size_t n_bytes() override { return count; }
     } reference;
+    reference.budget = &accumulated_bytes;
+    reference.limit = total_limit;
 
     // Capture actual tensor payloads emitted by the normal recurrent
     // serialization traversal, but for just one selected layer. These are
@@ -895,16 +905,15 @@ bool llama_memory_recurrent::qsa_debug_dump_state(
 
     const uint32_t endian_probe = 1;
     if (*(const uint8_t *) &endian_probe != 1) return false;
-    static std::atomic<size_t> accumulated_bytes{0};
-    // Full multi-layer states are large: 16 groups x 3 phases of this model
-    // exceed 512 MiB. Still bounded and fail closed before each transfer.
-    constexpr size_t total_limit = size_t(8)*1024*1024*1024;
-
     if (selected_layer >= 0) {
         char ref_manifest_path[4096];
         const int used = snprintf(ref_manifest_path, sizeof(ref_manifest_path),
                                   "%s/serializer-reference.jsonl", dir);
         if (used < 0 || (size_t) used >= sizeof(ref_manifest_path)) return false;
+        if (step == 0) {
+            FILE * existing = fopen(ref_manifest_path, "rb");
+            if (existing) { fclose(existing); return false; }
+        }
         FILE * ref_manifest = fopen(ref_manifest_path, "ab");
         if (!ref_manifest) return false;
         bool ref_ok = true;

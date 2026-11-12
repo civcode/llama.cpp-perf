@@ -3994,6 +3994,32 @@ private:
                    (ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && draft.size() > llama_n_rs_seq(ctx_dft));
 
                 if (use_ckpt_tgt) {
+                    // Optional one-shot reference immediately before the actual
+                    // checkpoint save; separate directory/ordinal from verification.
+                    static bool qsa_checkpoint_captured = false;
+                    const char * checkpoint_dir = std::getenv("LLAMA_QSA_GDN_CHECKPOINT_DIR");
+                    if (checkpoint_dir && !qsa_checkpoint_captured) {
+                        if (!std::getenv("LLAMA_QSA_GDN_DIR") || slot.id != 0 ||
+                            slot.prompt.tokens.has_mtmd || slot.prompt.tokens.size() > 131072 ||
+                            std::filesystem::exists(std::string(checkpoint_dir) + "/manifest.jsonl")) {
+                            GGML_ABORT("QSA checkpoint observer requires a fresh bounded text slot");
+                        }
+                        const llama_pos pos = slot.prompt.tokens.pos_next();
+                        const json event = {{"kind", "event"}, {"step", 0}, {"phase", "pre_checkpoint"},
+                            {"seq", slot.id}, {"position", pos},
+                            {"target_ids", slot.prompt.tokens.get_tokens()}, {"draft_ids", draft},
+                            {"accepted", json::array()}, {"rollback", false},
+                            {"rollback_mode", "none"}, {"replay", false}};
+                        std::ofstream manifest(std::string(checkpoint_dir) + "/manifest.jsonl", std::ios::app);
+                        if (!manifest) GGML_ABORT("QSA checkpoint observer cannot open manifest");
+                        manifest << event.dump() << '\n';
+                        manifest.close();
+                        if (!manifest || !llama_qsa_debug_dump_gdn(ctx_tgt, slot.id, checkpoint_dir,
+                                0, "pre_checkpoint", pos)) {
+                            GGML_ABORT("QSA checkpoint observer cannot capture recurrent state");
+                        }
+                        qsa_checkpoint_captured = true;
+                    }
                     //const int64_t t_start = ggml_time_us();
 
                     ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);

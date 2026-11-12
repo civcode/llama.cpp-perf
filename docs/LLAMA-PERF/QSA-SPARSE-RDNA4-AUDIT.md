@@ -191,6 +191,12 @@ Chat AI added two independent **capture traversals** within `llama_memory_recurr
 
 **Limitation:** both the serializer visitor and the observer read device data using `ggml_backend_tensor_get`. They follow independently selected tensor-offset/callback paths, but this is **not** a second independent GPU transfer implementation. Byte equality validates serializer-vs-observer agreement, not correct attention numerics or end-to-end equivalence. The new C++ code and Python tests have not yet run on the agent's host.
 
+### Iteration 0021 validation
+
+[Report 0021](../../.ai/reports/report-0021.md) records a bounded natural checkpoint restore and replay with actual serializer/observer byte agreement on CUDA0, ROCm0 and ROCm1. For a one-shot reference immediately before the first target checkpoint save, set `LLAMA_QSA_GDN_CHECKPOINT_DIR` to a second fresh directory alongside `LLAMA_QSA_GDN_DIR`; use the same layer filter and serializer-reference flags. This synchronizes the target and writes a separate manifest, so it is diagnostic only. The aggregate 8 GiB budget now counts serializer-reference transfers as well as observer transfers. Both paths use the same backend read API and are not independent hardware-transfer oracles.
+
+The opt-in `tools/test_qsa_gdn_shared.cpp` fixture exercises an actual shared prefix, `seq_cp`, split and independent continuations on the three-device model. A live destination cell used staged `src0=0` with normalized serializer `src=1`; byte equality to the donor's equivalent continuation confirms propagation for the tested layer and tokens, not general mixed-sequence safety. Sparse numerical correctness remains **NO-GO**.
+
 ### Staged input source versus serialized state source
 
 Source review of `llama_memory_recurrent::find_slot` identified a distinction that changes the appropriate test: during a shared-sequence split, `cell.src0` retains the *staged graph-input source* (used by `llama_memory_recurrent_context::s_copy`), while the algorithm normalizes `cell.src = cell_index` after preparing the slot. The normal stable-state serializer uses **`cell.src`**, not `cell.src0`. Thus a real sequence copy can involve cross-cell state **without leaving a nontrivial serialized `cell.src`** in the post-decode checkpoint. A test that requires `cell.src != physical_cell` after every normal decode may be unattainable by design.
