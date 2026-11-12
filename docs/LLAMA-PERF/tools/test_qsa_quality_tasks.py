@@ -111,6 +111,8 @@ class TaskQualityTests(unittest.TestCase):
         self.assertEqual(result["dense_repeat_unstable_tasks"], 0)
         self.assertEqual(result["sparse_regressions_with_stable_control"], 0)
         self.assertEqual(result["sparse_improvements_with_stable_control"], 0)
+        self.assertEqual(result["per_difficulty"]["unclassified"]["tasks"], 6)
+        self.assertEqual(result["per_difficulty"]["unclassified"]["stable_dense_solved"], 6)
 
     def test_single_sparse_regression(self):
         first = self.tasks[0]
