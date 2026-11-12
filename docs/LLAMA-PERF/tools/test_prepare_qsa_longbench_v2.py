@@ -94,7 +94,7 @@ class LongBenchV2AdapterTests(unittest.TestCase):
                     "completion_tokens": 8,
                 })
             target = self.root / f"{condition}.jsonl"
-            target.write_text("".join(json.dumps(r)+"\\n" for r in records))
+            target.write_text("".join(json.dumps(r)+"\n" for r in records))
             runs[condition] = target
         result = score(path, runs["dense-a"], runs["dense-b"], runs["sparse"])
         self.assertEqual(result["dense_a_pass"], 4)
