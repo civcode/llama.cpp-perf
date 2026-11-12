@@ -207,6 +207,12 @@ def compare_rows(a: dict, b: dict, query: int) -> dict:
         "other_best_excluded_score": after["best_excluded_score"],
         "other_cutoff_margin": after["margin"],
         "max_absolute_score_delta": max_delta,
+        # The window is measured in dense score units; it is a sensitivity
+        # indicator, not proof that these pools changed selection.
+        "dense_pools_within_max_delta_of_cutoff": sum(
+            math.isfinite(x) and before["cutoff_score"] is not None
+            and abs(float(x) - before["cutoff_score"]) <= max_delta
+            for x in scores_a),
         "finite_status_disagreements": finite_mismatch,
         "first_changed_score_pool": first_changed_score,
         "dense_score_for_changed_pools": {str(p): float(scores_a[p]) for p in (removed+added)[:16]},

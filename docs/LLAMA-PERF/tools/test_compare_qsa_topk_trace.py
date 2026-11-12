@@ -83,6 +83,7 @@ class ScoreTopkCompareTest(unittest.TestCase):
         self.assertEqual(first["kv_cells_added_first"], [8, 9])
         self.assertAlmostEqual(first["dense_cutoff_margin"], 0.01, places=6)
         self.assertAlmostEqual(first["other_cutoff_margin"], 0.03, places=6)
+        self.assertEqual(first["dense_pools_within_max_delta_of_cutoff"], 2)
 
     def test_nonfused_topk_works_without_pool_mapping(self):
         dense = write_run(self.root, "dense", fused=False)

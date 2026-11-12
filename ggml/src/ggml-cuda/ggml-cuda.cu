@@ -2724,6 +2724,11 @@ static void ggml_cuda_qsa_topk_trace(ggml_backend_cuda_context & ctx, const ggml
     const bool is_mask = dst->op == GGML_OP_TOP_K_MASK && strcmp(dst->name, "qsa_topk_mask_il15") == 0;
     const bool is_topk = dst->op == GGML_OP_TOP_K && strcmp(dst->name, "qsa_topk_il15") == 0;
     if (!is_mask && !is_topk) return;
+    // This diagnostic targets the four-token QSA divergence, not long prefill
+    // batches. Filtering before the counters also keeps the bounded quota for
+    // the first relevant prompt/verification batches.
+    const ggml_tensor * trace_topk = is_mask ? dst->src[1] : dst;
+    if (!trace_topk || trace_topk->ne[1] != 4) return;
 
     const char * limit_text = std::getenv("GGML_QSA_TOPK_TRACE_LIMIT");
     long limit = 64;

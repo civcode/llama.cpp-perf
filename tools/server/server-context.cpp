@@ -5014,6 +5014,28 @@ private:
                         slot.stats.n_draft_verif_steps, slot.stats.n_gen,
                         static_cast<int32_t>(spec_i_batch.size()), static_cast<int32_t>(n_draft));
 
+                // Diagnostic only: retain actual pre-sampling target logits for
+                // bounded, token-aligned comparisons. No sampling is overridden.
+                const char * logits_dir = std::getenv("LLAMA_QSA_LOGITS_DIR");
+                static unsigned logits_groups = 0;
+                std::vector<std::vector<float>> observed_logits;
+                const bool observe_logits = logits_dir && logits_groups < 16;
+                if (observe_logits) {
+                    if (logits_groups == 0 && std::filesystem::exists(std::string(logits_dir) + "/manifest.jsonl")) {
+                        GGML_ABORT("QSA logits capture requires a fresh empty directory");
+                    }
+                    const uint32_t endian_check = 1;
+                    GGML_ASSERT(*reinterpret_cast<const uint8_t *>(&endian_check) == 1);
+                    const int32_t nv = llama_vocab_n_tokens(vocab);
+                    GGML_ASSERT(slot.id == 0 && !slot.prompt.tokens.has_mtmd && nv > 0 && nv <= 262144);
+                    GGML_ASSERT(spec_i_batch.size() <= 16 && slot.prompt.tokens.size() <= 131072);
+                    for (int32_t idx : spec_i_batch) {
+                        const float * values = llama_get_logits_ith(slot.ctx_tgt, idx);
+                        GGML_ASSERT(values);
+                        observed_logits.emplace_back(values, values + nv);
+                    }
+                }
+
                 std::vector<llama_token> accepted;
                 if (!synth_probs.empty()) {
                     // synthetic acceptance replaces verification entirely, so it comes first
@@ -5034,6 +5056,39 @@ private:
                         static_cast<int32_t>(accepted.size()), static_cast<int32_t>(n_draft));
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+
+                if (observe_logits) {
+                    // Each event has a distinct position and carries the full
+                    // actual verification input history and sampler outcome.
+                    // It does not claim that the recurrent state was captured.
+                    static unsigned step = 0;
+                    const auto & history = slot.prompt.tokens.get_tokens();
+                    const auto pos0 = slot.prompt.tokens.pos_next() - (llama_pos) spec_i_batch.size();
+                    const std::string dir(logits_dir);
+                    std::ofstream manifest(dir + "/manifest.jsonl", std::ios::app);
+                    if (!manifest) GGML_ABORT("cannot open QSA logits manifest");
+                    for (size_t i = 0; i < observed_logits.size(); ++i, ++step) {
+                        const std::string filename = "logits-" + std::to_string(step) + ".f32";
+                        std::ofstream out(dir + "/" + filename, std::ios::binary);
+                        out.write(reinterpret_cast<const char *>(observed_logits[i].data()),
+                                  observed_logits[i].size() * sizeof(float));
+                        out.close();
+                        if (!out) GGML_ABORT("cannot write QSA logits snapshot");
+                        const json event = {{"step", step}, {"phase", "verify_logits"},
+                            {"seq", slot.id}, {"position", pos0 + (llama_pos) i},
+                            {"kind", "event"}, {"target_ids", history},
+                            {"draft_ids", slot.spec_draft}, {"accepted", accepted},
+                            {"rollback", n_rollback > 0}, {"replay", slot.spec_is_replay}};
+                        const json tensor = {{"step", step}, {"phase", "verify_logits"},
+                            {"seq", slot.id}, {"position", pos0 + (llama_pos) i},
+                            {"kind", "tensor"}, {"layer", -1}, {"name", "logits"},
+                            {"dtype", "f32"}, {"shape", std::vector<size_t>{observed_logits[i].size()}}, {"path", filename}};
+                        manifest << event.dump() << '\n' << tensor.dump() << '\n';
+                    }
+                    manifest.close();
+                    if (!manifest) GGML_ABORT("cannot write QSA logits manifest");
+                    ++logits_groups;
+                }
 
                 // the recurrent snapshots are only guaranteed for batches of up to n_rs_seq + 1 tokens, so a longer draft uses its checkpoint
                 const bool use_ckpt_tgt =
