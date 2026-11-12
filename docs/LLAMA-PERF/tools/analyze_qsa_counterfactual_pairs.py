@@ -184,10 +184,16 @@ def analyze(manifest: Path, dense_a: Path, dense_b: Path,
             "variants": per_task,
         }
         if sparse:
-            pair_report["sparse_pair_solved"] = sparse_pair_ok
-            pair_report["pair_regression"] = baseline_pair_ok and not sparse_pair_ok
-            pair_report["pair_improvement"] = not baseline_pair_ok and sparse_pair_ok
-            report["sparse_solved_pairs"] += int(sparse_pair_ok)
+            # A usage mismatch is an invalid comparison, not evidence that
+            # sparse regressed. Stable dense controls alone are insufficient.
+            comparable_pair = all(v["comparable"] for v in per_task)
+            pair_report["comparable_pair"] = comparable_pair
+            pair_report["sparse_pair_solved"] = sparse_pair_ok if comparable_pair else None
+            pair_report["pair_regression"] = (comparable_pair and
+                                              baseline_pair_ok and not sparse_pair_ok)
+            pair_report["pair_improvement"] = (comparable_pair and
+                                               not baseline_pair_ok and sparse_pair_ok)
+            report["sparse_solved_pairs"] += int(comparable_pair and sparse_pair_ok)
             report["sparse_pair_regressions"] += int(pair_report["pair_regression"])
             report["sparse_pair_improvements"] += int(pair_report["pair_improvement"])
         report["per_pair"].append(pair_report)
