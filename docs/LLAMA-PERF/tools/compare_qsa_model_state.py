@@ -16,7 +16,9 @@ Supported dtype: f32, f16, bf16. Files and manifests stay OUTSIDE Git.
 Physical cell/rollback snapshot plane are recorded for attribution, but they
 are not logical matching keys: the observer must resolve the *logical* state
 row before writing, including pending rollback snapshot-plane semantics.
-Every tensor must match an event's step/phase/seq/position key.
+The event 'step' MUST be a strictly increasing checkpoint ordinal across
+all phases (not the server's generation-token count). Every tensor must
+match an event's step/phase/seq/position key.
 
     python3 docs/LLAMA-PERF/tools/compare_qsa_model_state.py denseA.jsonl denseB.jsonl
     python3 docs/LLAMA-PERF/tools/compare_qsa_model_state.py denseA.jsonl sparse.jsonl \
@@ -48,6 +50,7 @@ def read_manifest(path: Path) -> tuple[dict, dict]:
     events = {}
     tensors = {}
     count = 0
+    previous_step = -1
     with path.open(encoding="utf-8") as source:
         for lineno, line in enumerate(source, 1):
             if not line.strip():
@@ -60,13 +63,16 @@ def read_manifest(path: Path) -> tuple[dict, dict]:
                 if not isinstance(record, dict):
                     raise ValueError("not a JSON object")
                 identity = key(record)
-                if (not isinstance(record["step"], int) or
+                if (not isinstance(record["step"], int) or record["step"] < 0 or
                         not isinstance(record["seq"], int) or
                         not isinstance(record["position"], int) or
                         not isinstance(record["phase"], str) or not record["phase"]):
                     raise ValueError("invalid event identity")
                 kind = record["kind"]
                 if kind == "event":
+                    if record["step"] <= previous_step:
+                        raise ValueError("event steps must be strictly increasing checkpoint ordinals")
+                    previous_step = record["step"]
                     if identity in events:
                         raise ValueError(f"duplicate event {identity}")
                     for field in ("target_ids", "draft_ids", "accepted"):
@@ -112,10 +118,12 @@ def values(manifest: Path, record: dict) -> list[float] | array:
     filename = Path(record["path"])
     if not filename.is_absolute():
         filename = manifest.parent / filename
-    raw = filename.read_bytes()
     count = math.prod(record["shape"])
     width = 4 if record["dtype"] == "f32" else 2
-    if len(raw) != count*width or len(raw) > 64*1024*1024:
+    if count*width > 64*1024*1024 or filename.stat().st_size != count*width:
+        raise ValueError(f"invalid bounded snapshot byte count: {filename}")
+    raw = filename.read_bytes()
+    if len(raw) != count*width:
         raise ValueError(f"invalid bounded snapshot byte count: {filename}")
     if record["dtype"] == "f32":
         vals = array("f")
