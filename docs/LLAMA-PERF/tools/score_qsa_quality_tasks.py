@@ -17,6 +17,7 @@ import argparse
 from collections import defaultdict
 import json
 from pathlib import Path
+import re
 
 from run_qsa_quality_tasks import CONDITIONS, load_tasks, sha256
 
@@ -57,6 +58,21 @@ def grade(task: dict, output: str, finish: str = "stop") -> tuple[bool, str]:
         if not isinstance(value, str):
             raise ValueError(f"invalid literal gold label for {task['id']}")
         return (output.strip() == value, "correct" if output.strip() == value else "incorrect_literal")
+    if criterion["type"] == "choice":
+        gold = criterion.get("value")
+        if gold not in ("A", "B", "C", "D"):
+            raise ValueError(f"invalid fixed-choice gold for {task['id']}")
+        # Permit a limited, explicitly specified set of four-choice answer
+        # forms, but never substring-search a free-form explanation.
+        answer = output.strip()
+        match = re.fullmatch(
+            r"(?:The correct answer is\s*|Answer:\s*|Option\s*)?"
+            r"\(?([A-D])\)?\.?\s*",
+            answer, flags=re.IGNORECASE)
+        if match is None:
+            return False, "invalid_or_ambiguous_choice"
+        chosen = match.group(1).upper()
+        return chosen == gold, "correct" if chosen == gold else "incorrect_choice"
     if criterion["type"] == "json":
         gold = criterion["value"]
         if not isinstance(gold, (dict, list)):
@@ -157,7 +173,7 @@ def score(tasks_file: Path, dense_a: Path, dense_b: Path, sparse: Path,
         prompt_usage_mismatch += int(not same_all_counts)
         category = categories[task["kind"]]
         tier = task.get("difficulty", "unclassified")
-        if tier not in ("anchored", "lookup", "unclassified"):
+        if tier not in ("anchored", "lookup", "unclassified", "benchmark_easy", "benchmark_hard"):
             raise ValueError(f"invalid task difficulty {tier!r} at {key}")
         difficulty = difficulty_summary[tier]
         difficulty["tasks"] += 1
