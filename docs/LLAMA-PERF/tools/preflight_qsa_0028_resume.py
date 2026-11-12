@@ -29,7 +29,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from run_qsa_quality_tasks import _localhost_api, load_tasks, sha256
+from run_qsa_quality_tasks import load_tasks, sha256
 from score_qsa_quality_tasks import _read_results, grade
 
 SOURCE_SHA256 = "15d61c22d92c96900b3c4948b6aeea218d3214b676a65df48e7b8555604c7fe2"
