@@ -1828,14 +1828,30 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
             } else {
                 static_assert(std::is_same_v<decltype(T_C_VKQ::x), float[T_C_VKQ::ne]>, "bad VKQ type");
                 half * tile_Q_h = (half *) tile_Q;
+                if constexpr (use_vkq_f32) {
+                    // The two gfx12 fragments hold even and odd V features,
+                    // not the lower and upper contiguous halves of the tile.
+                    static_assert(nbatch_combine % 16 == 0, "bad FP32 combine size");
 #pragma unroll
-                for (int k1 = 0; k1 < nbatch_combine; k1 += T_C_VKQ::J/2) {
+                    for (int k1 = 0; k1 < nbatch_combine; k1 += 16) {
+                        const int base = 2*((k00 + k1)/16);
 #pragma unroll
-                    for (int l = 0; l < T_C_VKQ::ne; ++l) {
-                        const int j = j0 + T_C_VKQ::get_i(l);
-                        const int k = 2*k1 + T_C_VKQ::get_j(l);
-
-                        tile_Q_h[j*(2*tile_stride) + k] = VKQ_C[(k00 + k1)/(T_C_VKQ::J/2)].x[l];
+                        for (int l = 0; l < T_C_VKQ::ne; ++l) {
+                            const int j = j0 + T_C_VKQ::get_i(l);
+                            const int k = 2*k1 + 2*T_C_VKQ::get_j(l);
+                            tile_Q_h[j*(2*tile_stride) + k]     = VKQ_C[base].x[l];
+                            tile_Q_h[j*(2*tile_stride) + k + 1] = VKQ_C[base + 1].x[l];
+                        }
+                    }
+                } else {
+#pragma unroll
+                    for (int k1 = 0; k1 < nbatch_combine; k1 += T_C_VKQ::J/2) {
+#pragma unroll
+                        for (int l = 0; l < T_C_VKQ::ne; ++l) {
+                            const int j = j0 + T_C_VKQ::get_i(l);
+                            const int k = 2*k1 + T_C_VKQ::get_j(l);
+                            tile_Q_h[j*(2*tile_stride) + k] = VKQ_C[(k00 + k1)/(T_C_VKQ::J/2)].x[l];
+                        }
                     }
                 }
             }
@@ -2229,7 +2245,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
                         const ggml_tensor * mask = dst->src[3];
                         const bool ok = q && k && v && mask && k->ne[2] > 0 &&
                                 ggml_cuda_qsa_gqa12_vkq_f32::eligible(
-                                    GGML_CUDA_CC_IS_RDNA(cc), true,
+                                    GGML_CUDA_CC_IS_RDNA4(cc), true,
                                     k->type == GGML_TYPE_F16 && v->type == GGML_TYPE_F16,
                                     mask->type == GGML_TYPE_F16,
                                     q->ne[0], v->ne[0], k->ne[0],
