@@ -114,5 +114,23 @@ class RadixOrderingTests(unittest.TestCase):
         d=self.pair(a,b)
         self.assertEqual(d['different_order_positions'],0)
 
+    def test_realistic_four_query_radix_shape(self):
+        n_pool, k, nq = 8256, 512, 4
+        score_one = [float(n_pool - p) for p in range(n_pool)]
+        picks_a = list(range(k))
+        picks_b = list(range(k-1))[::-1] + [k-1]
+        a = record(score_one, picks_a, blocks=False)
+        b = record(score_one, picks_b, blocks=False)
+        for item, picks in ((a, picks_a), (b, picks_b)):
+            item['scores'] = array('f', score_one*nq)
+            item['selected'] = array('i', picks*nq)
+            item['nq'] = nq
+        output = self.pair(a, b)
+        self.assertEqual(output['queries'], 4)
+        self.assertEqual(output['positions'], 2048)
+        self.assertEqual(output['different_positions_in_tie_tail'], 0)
+        self.assertTrue(output['rows'][0]['radix_expected_for_HIP'])
+        self.assertEqual(output['rows'][0]['above_threshold_picks'], 511)
+
 if __name__ == '__main__':
     unittest.main()
