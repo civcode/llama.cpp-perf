@@ -318,6 +318,7 @@ The Coding Agent is authorized to fix issues discovered during bring-up rather t
 - Escalate genuine blockers only after reasonable autonomous efforts. State exactly what blocks completion and what evidence was gathered.
 - Neither AI should claim success if essential completion criteria were not met.
 - Prefer local builds, tests, linters, and scripts over GitHub Actions.
+- **Local compile parallelism:** The Human User confirms this workstation can use **28 parallel compilation jobs**. Prefer `cmake --build <build-directory> --parallel 28` (or the build system's equivalent `-j 28`) for future builds, including mixed CUDA/HIP builds. If an actual memory/resource limit occurs, reduce parallelism for that build; do not assume that 28-way parallelism always fits every compilation stage.
 - **Do not dispatch, run, enable, or consume GitHub Actions unless the Human User explicitly requests it.**
 - Any newly created GitHub Actions workflow must be manual-only (`workflow_dispatch`) unless the Human User explicitly requests automatic triggers. Do not silently alter existing automatic triggers.
 
