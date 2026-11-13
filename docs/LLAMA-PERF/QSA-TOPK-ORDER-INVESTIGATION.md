@@ -25,14 +25,14 @@ A future code change adding an unconditional sort to the selected top-k indices 
 
 ## New CPU-only capture validator
 
-New **tools/analyze_qsa_topk_order.py**, with 13 synthetic regression tests **tools/test_analyze_qsa_topk_order.py**, performs a fail-closed audit on the **existing** QSA_TOPK_TRACE captures:
+New **tools/analyze_qsa_topk_order.py**, with 14 synthetic regression tests **tools/test_analyze_qsa_topk_order.py**, performs a fail-closed audit on the **existing** QSA_TOPK_TRACE captures:
 - loads each capture through the existing comparator parser, matches HIP0 layer15 event keys, shapes and exact score/blocks/extra **bytes**;
 - validates all selected indices are unique, in bounds and exactly equal to the expected top-k **set** with uint32 score ordering and ascending-index threshold tie policy, including raw +/-0 distinction;
 - asserts that the deterministic threshold tie-tail is correct, counts raw order-mismatched positions **in the nondeterministic above-threshold prefix versus the tie tail**;
 - verifies the reconstructed mapped KV sets are identical regardless of top-k order, counts descending-score inversions, and emits a bounded JSON report outside Git;
 - refuses any mismatch in raw scores/maps, membership, threshold tie policy or mapped cell sets rather than silently normalizing or attributing it to atomic scheduling.
 
-**Local Chat AI check:** 13 synthetic tests passed and the script compiled with Python syntax checks in a temporary container copy. **Not validated on the original 0037 raw captures**, because those bytes are on the external Coding Agent workstation.
+**Local Chat AI check:** 14 synthetic tests passed and the script compiled with Python syntax checks in a temporary container copy. **Not validated on the original 0037 raw captures**, because those bytes are on the external Coding Agent workstation.
 
 The offline-only original-capture replay should be performed on the Coding Agent host, without launching llama-server, CUDA/HIP, telemetry or GPU tracing. For example, with the actual saved log paths (do not guess filenames), run:
 
