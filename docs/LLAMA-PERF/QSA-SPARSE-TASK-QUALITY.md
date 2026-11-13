@@ -230,3 +230,12 @@ Bounded proposed matched experiment after local compilation:
 - No default/promotion/production or numeric tolerance change, no long-context stress, 98K replay, graph tests or full-model throughput comparisons. PCIe stays at operator Gen3; stop immediately on any serious NVIDIA Xid/CUDA/PCIe/HIP fault, without retry/reset/reboot. Raw tensors, profiler files, model data and logs remain outside Git. Detail: .ai/handoffs/handoff-0035.md.
 
 Numerical equivalence is still **NOT_ESTABLISHED** and production promotion remains **NO-GO**.
+
+
+## Iteration 0035 Partial; 0036 resumes the uncompleted FP32 pilot
+
+[Report 0035](../../.ai/reports/report-0035.md) is **Partial**, not a completed numerical experiment. Early passive GPU detection failed because the Coding Agent's sandbox lacked /dev/nvidia* and /dev/kfd. After sandbox deactivation, both AMD gfx1201 GPUs and NVIDIA were passively accessible; NVIDIA PCIe max Gen3 and idle Gen1 observed, no newly reported fault in the inspected current-boot logs. The existing mixed gfx1201 / CUDA sm_89 Release build and 215 QSA tests passed. **No FP32 accumulator was implemented, built or launched**, and no four-condition model experiment ran. The diagnostic GGML_HIP_QSA_GQA12_VKQ_F32=1 still deliberately aborts "GPU implementation not built". This must never be mistaken for a passing FP32 variant.
+
+Detailed gfx1201 WMMA tile and final combine constraints are in [QSA-GQA12-VKQ-FP32-DESIGN.md](QSA-GQA12-VKQ-FP32-DESIGN.md). Its shape analysis is source-level, not GPU validated. The ongoing user-approved diagnostic precision milestone moves to **.ai/handoffs/handoff-0036.md**. Complete the real, distinctly traceable opt-in FP32 VKQ path, validate with local ROCm compilation and bounded low-risk tests, then run the already-approved matched ~32K dense A/B, half2-only11, FP32-only11 pilot only after robust device preflight. If technically blocked, keep the fail-closed guard and report the actual compilation/layout/LDS limitation. No repeat benchmark simply to find faults, no Gen4 or PCIe/power changes, no default-on sparse and no GitHub Actions.
+
+Production promotion and numerical equivalence remain **NO-GO**.
