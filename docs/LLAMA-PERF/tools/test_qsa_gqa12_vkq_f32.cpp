@@ -1,8 +1,7 @@
 // CPU-only contract tests for strict diagnostic FP32 VKQ accumulation request.
 // Run in the local repository with:
-// c++ -std=c++17 -O2 -Wall -Wextra -Werror \
-//   docs/LLAMA-PERF/tools/test_qsa_gqa12_vkq_f32.cpp \
-//   -o /tmp/test-qsa-vkq-f32 && /tmp/test-qsa-vkq-f32
+// c++ -std=c++17 -O2 -Wall -Wextra -Werror docs/LLAMA-PERF/tools/test_qsa_gqa12_vkq_f32.cpp -o /tmp/test-qsa-vkq-f32
+// /tmp/test-qsa-vkq-f32
 //
 // This tests request validation and shape guards, NOT GPU arithmetic.
 #include "../../../ggml/src/ggml-cuda/fattn-sparse-q4-gqa12-vkq-f32.h"

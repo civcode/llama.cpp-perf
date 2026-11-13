@@ -1,0 +1,15 @@
+# Report 0035 — blocked at device preflight
+
+**Status: Blocked.** Starting commit `9543bd6028423a11133c2c779ae6c6702e5c6d6d`. The requested FP32 kernel is **not implemented**, built, or traced; no four-condition experiment or FP64/downstream comparison was performed. The existing explicit `GPU implementation not built` abort remains in place. Production defaults and half2 arithmetic are unchanged. No conclusion about FP32 accuracy or kernel feasibility follows.
+
+## CPU validation
+
+The committed standalone C++ test initially failed with `-Werror=comment`: command examples ended in backslashes inside `//` comments. Corrected the comments; `g++ -std=c++17 -O2 -Wall -Wextra -Werror` and the resulting test passed. Python compileall passed, and `python3 -m unittest discover -s docs/LLAMA-PERF/tools -p 'test*qsa*.py'` passed 215 tests. The CPU test covers request parsing and eligibility, not actual device dispatch or arithmetic. The unset request remains disabled by the parser; the existing GPU abort prevents a requested FP32 mode silently running half2.
+
+## Inspection and stop condition
+
+The existing mixed build cache specifies Release and `CMAKE_HIP_ARCHITECTURES=gfx1201`. In the non-RDNA3 AMD WMMA generic tile, `fattn-mma-f16.cuh` uses a scrambled half2 VKQ C tile and a 32-row half2 A tile; `mma.cuh` supplies an independent gfx12 FP32 WMMA intrinsic, while the existing combine code treats float and scrambled half2 layouts differently. A mere substitution of the accumulator type would not establish correct operands, indexing, or combine semantics. AMD's [RDNA4 dense WMMA documentation](https://rocm-handbook.amd.com/projects/amd-rocm-optimization-guide/en/latest/compiler-builtins/rdna/rdna4-dense-wmma-builtins.html) describes the wave32 FP32 accumulator and gfx12 builtin; this is not a compiled or hardware-verified implementation. Both AMD device architectures were not verified through ROCm.
+
+The first passive device preflight returned `NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver`. In this execution environment `/dev/nvidia*` and `/dev/kfd` are absent, although PCI enumeration lists the NVIDIA device and two discrete AMD devices with kernel drivers attached. This may be device-node isolation rather than a host GPU fault; it cannot be resolved or distinguished here. Current-boot kernel log inspection showed NVIDIA module loading and no matching Xid/AER/DPC or AMD fault in the inspected lines. Neither GPU accessibility, GPU memory nor PCIe Gen3 could be verified. In accordance with the stop rule, no GPU work or model run was attempted after the failed check. No retries, resets, reboots, configuration changes, stress tests or GitHub Actions were performed.
+
+The remaining work requires an environment with the GPU device nodes available and healthy preflight, followed by a correctly wired, separately traceable FP32 implementation, mixed build, and the originally bounded pilot. Preserve the fail-closed guard until that implementation is demonstrated. Raw captures and model files were not created or modified.
