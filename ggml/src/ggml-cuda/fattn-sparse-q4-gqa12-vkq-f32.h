@@ -12,6 +12,7 @@
 // sparse GQA12 explicitly enabled and the mask audit disabling GPU graphs.
 // Values other than exactly "1" fail closed; no silent fallback on typo.
 #include <cstring>
+#include <cstdint>
 
 namespace ggml_cuda_qsa_gqa12_vkq_f32 {
 
