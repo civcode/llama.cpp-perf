@@ -2,6 +2,11 @@
 #include "cp-async.cuh"
 #include "mma.cuh"
 #include "fattn-common.cuh"
+#include "fattn-sparse-q4-gqa12-vkq-f32.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <cstdio>
 
 using namespace ggml_cuda_mma;
 
@@ -2144,6 +2149,24 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
     const int id = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[id].cc;
 
+    // The request gate is evaluated without enabling sparse by itself. A
+    // layer11 request must NOT silently fall back when shape/dispatch rejects
+    // the special WMMA path. Other layers remain on their original kernels.
+#if defined(GGML_USE_HIP)
+    const auto vkq_request = ggml_cuda_qsa_gqa12_vkq_f32::parse(
+        std::getenv("GGML_HIP_QSA_GQA12_VKQ_F32"),
+        std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12"),
+        std::getenv("GGML_QSA_MASK_AUDIT"),
+        std::getenv("GGML_HIP_QSA_GQA12_LAYER_FILTER"));
+    if (!vkq_request.valid) {
+        GGML_ABORT("invalid or incomplete GGML_HIP_QSA_GQA12_VKQ_F32 request");
+    }
+    const bool requested_fp32_here = vkq_request.enabled &&
+            std::strcmp(dst->name, "qsa_flash_attn_il11") == 0;
+#else
+    constexpr bool requested_fp32_here = false;
+#endif
+
     constexpr int ncols = ncols1 * ncols2;
 
     const int  nthreads       = ggml_cuda_fattn_mma_get_nthreads      (DKQ, DV, ncols, cc);
@@ -2193,15 +2216,57 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
         if constexpr (ggml_cuda_flash_attn_ext_mma_f16_may_use_sparse(DKQ, DV, ncols1, ncols2)) {
             if (ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(cc, dst, ncols1, ncols2)) {
                 constexpr bool use_sparse_kernel = true;
-                fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
-                use_sparse = true;
-
-                static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
-                if (!shared_memory_limit_raised[id]) {
-                    CUDA_CHECK(cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total));
-                    shared_memory_limit_raised[id] = true;
+                if (requested_fp32_here) {
+#if defined(GGML_USE_HIP) && defined(AMD_WMMA_128B_AVAILABLE)
+                    if constexpr (DKQ == 256 && DV == 256 && ncols1 == 4 && ncols2 == 4) {
+                        const ggml_tensor * q = dst->src[0];
+                        const ggml_tensor * k = dst->src[1];
+                        const ggml_tensor * v = dst->src[2];
+                        const ggml_tensor * mask = dst->src[3];
+                        const bool ok = q && k && v && mask && k->ne[2] > 0 &&
+                                ggml_cuda_qsa_gqa12_vkq_f32::eligible(
+                                    GGML_CUDA_CC_IS_RDNA(cc), true,
+                                    k->type == GGML_TYPE_F16 && v->type == GGML_TYPE_F16,
+                                    mask->type == GGML_TYPE_F16,
+                                    q->ne[0], v->ne[0], k->ne[0],
+                                    q->ne[1], q->ne[3], q->ne[2]/k->ne[2],
+                                    11, k->ne[1], ggml_get_op_params_i32(dst, 4));
+                        if (!ok) {
+                            GGML_ABORT("requested VKQ FP32 but this QSA layer11 shape is not eligible");
+                        }
+                        // A DISTINCT compile-time kernel specialization. A
+                        // profiler symbol and audited layer dispatch are both
+                        // needed to prove it actually launched.
+                        constexpr bool vkq_fp32_kernel = true;
+                        fattn_kernel = flash_attn_ext_f16<
+                            DKQ, DV, ncols1, ncols2, use_logit_softcap,
+                            V_is_K_view, use_sparse_kernel, vkq_fp32_kernel>;
+                        CUDA_CHECK(cudaFuncSetAttribute(
+                            reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel),
+                            cudaFuncAttributeMaxDynamicSharedMemorySize,
+                            nbytes_shared_total));
+                        std::fprintf(stderr,
+                                     "QSA_VKQ_F32_SELECT backend=HIP layer=11 device=%d variant=wmma_f32_register_half2_combine\n",
+                                     id);
+                    } else {
+                        GGML_ABORT("requested VKQ FP32 outside 256x256 ncols 4x4");
+                    }
+#else
+                    GGML_ABORT("requested VKQ FP32 on unsupported non-gfx12 WMMA build");
+#endif
+                } else {
+                    fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
+                    static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
+                    if (!shared_memory_limit_raised[id]) {
+                        CUDA_CHECK(cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total));
+                        shared_memory_limit_raised[id] = true;
+                    }
                 }
+                use_sparse = true;
             } else {
+                if (requested_fp32_here) {
+                    GGML_ABORT("requested VKQ FP32 but eligible audited sparse layer11 kernel was not selected");
+                }
                 constexpr bool use_sparse_kernel = false;
                 fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
 
