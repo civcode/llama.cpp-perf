@@ -123,3 +123,17 @@ model/driver/hardware changes or production sparse promotion.
 
 This design note is an implementation aid, **not** evidence of a working
 FP32 kernel, actual arithmetic improvement or numerical equivalence.
+
+
+## Chat AI implementation after Report 0036 — pending local HIP validation
+
+The repo now includes a **candidate actual FP32 WMMA register-accumulation variant**; statements above referring to the absence of source code describe the status at Report 0036, before the subsequent commits. This is NOT build-tested yet.
+
+- **mma.cuh**: new gfx12-only dual-F32 fragment helper calls the existing gfx12 FP32 WMMA intrinsic twice on the two 16-feature halves of the same 32-feature A operand, reusing the exact half2 A/B partition the baseline used. It does not replace the FP16 values or half softmax conversion.
+- **fattn-mma-f16.cuh**: new compile-time bool use_vkq_f32 propagates through the global flash-attention kernel, process-tile and iter templates. Only the narrow 256x256 Q4 4x4 sparse specialization can set it. The register C array becomes 16 x 16x16 FP32 fragments instead of eight packed FP16 fragments, and both original FP32 C online rescaling branches are reused. The shared combine STILL casts each float to F16 when writing the existing half2 scratch, before the original FP32 final normalization. Thus the first candidate intentionally tests **FP32 WMMA MAC and register rescaling, with existing F16 intermediate shared combine**. Do NOT describe it as fully FP32 end-to-end. It may incur register spills/occupancy loss.
+- **fattn-mma-f16.cuh dispatch**: a distinct compile-time kernel specialization is selected ONLY when the existing strict VKQ_F32 opt-in and QSA layer11 selector permit it, and the actual tensor/sparse/shape predicate rechecks 256x256 GQA12 Q=4 K/V F16 and F16 mask. The eligible layer11 request aborts rather than quietly falling back. One diagnostic marker QSA_VKQ_F32_SELECT identifies host selection but **does not prove kernel launch**; require exact HIP profiler kernel-symbol confirmation.
+- **fattn.cu**: removes the original explicit "GPU implementation not built" guard; invalid requests still abort through the strict gate, and default paths are unchanged. **No local GPU compilation or execution has yet occurred on this candidate.** The local Coding Agent MUST build/tests/validate it before enabling the opt-in on model inference. A source-level type/layout mistake or unexpected GEMM accumulation behavior is still possible.
+- A first tiny local HIP fixture must compare **the new helper on actual sparse-kernel input fragment layout** with a scalar/F64 reference across both gfx1201 devices, including the roundtrip into the existing half2 shared combine. The earlier Report 0036 standalone fixture proves only the builtin's independent matrices, not this integration.
+- If this candidate fails build/operand mapping or overflows registers/LDS, fix the implementation autonomously; if a clean FP32 experiment actually requires a wider shared scratch, document a separate bounded follow-up rather than silently mixing accumulator and combine precision changes into one causal claim.
+
+The next bounded local milestone is **Handoff 0037**. Numerical equivalence and production promotion remain NO-GO.
