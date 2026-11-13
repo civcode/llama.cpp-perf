@@ -23,11 +23,10 @@ static const char * ggml_cuda_qsa_sparse_gqa12_layer_option(const ggml_tensor * 
     const char * sparse_enabled = std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12");
     const char * filter = std::getenv("GGML_HIP_QSA_GQA12_LAYER_FILTER");
 
-    // Explicit fail-closed scaffold: the HIP WMMA accumulator variant is NOT
-    // implemented yet. A user opting in must never silently run the existing
-    // half2 path and mistake it for an FP32 VKQ precision experiment.
-    // The local GPU implementer removes only the unimplemented abort AFTER
-    // wiring a distinct compiled FP32 VKQ path and verifying actual launches.
+    // Diagnostic-only strict configuration gate. A well-formed request is
+    // routed by the distinct gfx12 sparse FP32 WMMA kernel specialization in
+    // fattn-mma-f16.cuh. The caller must verify compiled/actual HIP launches;
+    // the selection flag itself is not a numerical or launch proof.
     const auto vkq_f32 = ggml_cuda_qsa_gqa12_vkq_f32::parse(
         std::getenv("GGML_HIP_QSA_GQA12_VKQ_F32"), sparse_enabled,
         std::getenv("GGML_QSA_MASK_AUDIT"), filter);
