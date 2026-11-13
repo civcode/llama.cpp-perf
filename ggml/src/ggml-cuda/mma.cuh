@@ -1404,6 +1404,24 @@ namespace ggml_cuda_mma {
 #endif // TURING_MMA_AVAILABLE
     }
 
+#if defined(AMD_WMMA_128B_AVAILABLE)
+    // gfx12 only.  The existing half2 VKQ WMMA uses two half16 fragments
+    // packed into a 32-feature accumulator.  A itself is the same pair of
+    // 16-feature wave32 fragments; retain that EXACT operand decomposition
+    // but keep both C fragments in independent FP32 registers.
+    static __device__ __forceinline__ void mma_vkq_gfx12_fp32(
+            tile<16, 16, float, DATA_LAYOUT_I_MAJOR> & C0,
+            tile<16, 16, float, DATA_LAYOUT_I_MAJOR> & C1,
+            const tile<32, 8, half2, DATA_LAYOUT_I_MAJOR> & A,
+            const tile<16, 8, half2, DATA_LAYOUT_I_MAJOR> & B) {
+        using A16 = tile<16, 8, half2, DATA_LAYOUT_I_MAJOR>;
+        static_assert(sizeof(A) == 2*sizeof(A16), "gfx12 VKQ FP32 operand fragments are not paired");
+        const A16 * fragments = reinterpret_cast<const A16 *>(&A);
+        mma(C0, fragments[0], B);
+        mma(C1, fragments[1], B);
+    }
+#endif // AMD_WMMA_128B_AVAILABLE
+
     template <data_layout dl_ab, data_layout dl_d>
     static __device__ __forceinline__ void mma(
             tile<16, 16, float, dl_d> & D, const tile<16, 8, nv_bfloat162, dl_ab> & A, const tile<16, 8, nv_bfloat162, dl_ab> & B) {
