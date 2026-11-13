@@ -1834,14 +1834,13 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
                     static_assert(nbatch_combine % 16 == 0, "bad FP32 combine size");
 #pragma unroll
                     for (int k1 = 0; k1 < nbatch_combine; k1 += 16) {
+#if defined(AMD_WMMA_128B_AVAILABLE)
                         const int base = 2*((k00 + k1)/16);
-#pragma unroll
-                        for (int l = 0; l < T_C_VKQ::ne; ++l) {
-                            const int j = j0 + T_C_VKQ::get_i(l);
-                            const int k = 2*k1 + 2*T_C_VKQ::get_j(l);
-                            tile_Q_h[j*(2*tile_stride) + k]     = VKQ_C[base].x[l];
-                            tile_Q_h[j*(2*tile_stride) + k + 1] = VKQ_C[base + 1].x[l];
-                        }
+                        store_vkq_gfx12_fp32_half(tile_Q_h, 2*tile_stride, j0, k1,
+                                                  VKQ_C[base], VKQ_C[base + 1]);
+#else
+                        NO_DEVICE_CODE;
+#endif
                     }
                 } else {
 #pragma unroll

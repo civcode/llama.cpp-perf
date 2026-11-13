@@ -1194,6 +1194,26 @@ void launch_fattn(
                                i, host_counts[i], n_kv_max, (long long) K->ne[1]);
                 }
             }
+            // Bounded diagnostic capture of the exact index sequence consumed
+            // by the first audited HIP0 layer-11 Q4 operation. Off by default.
+            const char * index_dir = std::getenv("GGML_QSA_SPARSE_INDICES_DIR");
+            static bool captured_indices = false;
+            if (index_dir && !captured_indices && id == 0 && n_lists == 1 &&
+                    std::strcmp(KQV->name, "qsa_flash_attn_il11") == 0) {
+                const int count = host_counts[0];
+                std::vector<int32_t> indices(count);
+                CUDA_CHECK(cudaMemcpy(indices.data(), KV_max.ptr, size_t(count)*sizeof(int32_t), cudaMemcpyDeviceToHost));
+                char path[4096];
+                const int length = std::snprintf(path, sizeof(path), "%s/HIP0-layer11-indices.bin", index_dir);
+                if (length < 0 || size_t(length) >= sizeof(path)) {
+                    GGML_ABORT("QSA sparse index capture path too long");
+                }
+                FILE * file = std::fopen(path, "wb");
+                if (!file || std::fwrite(indices.data(), sizeof(int32_t), indices.size(), file) != indices.size() || std::fclose(file) != 0) {
+                    GGML_ABORT("failed to save QSA sparse indices");
+                }
+                captured_indices = true;
+            }
         }
     }
 

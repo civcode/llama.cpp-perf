@@ -1420,6 +1420,20 @@ namespace ggml_cuda_mma {
         mma(C0, fragments[0], B);
         mma(C1, fragments[1], B);
     }
+
+    // Store the even/odd feature fragments in half2-compatible LDS order.
+    static __device__ __forceinline__ void store_vkq_gfx12_fp32_half(
+            half * dst, const int stride, const int j0, const int k0,
+            const tile<16, 16, float, DATA_LAYOUT_I_MAJOR> & even,
+            const tile<16, 16, float, DATA_LAYOUT_I_MAJOR> & odd) {
+#pragma unroll
+        for (int l = 0; l < even.ne; ++l) {
+            const int j = j0 + even.get_i(l);
+            const int k = 2*k0 + 2*even.get_j(l);
+            dst[j*stride + k] = even.x[l];
+            dst[j*stride + k + 1] = odd.x[l];
+        }
+    }
 #endif // AMD_WMMA_128B_AVAILABLE
 
     template <data_layout dl_ab, data_layout dl_d>

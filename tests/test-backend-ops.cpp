@@ -9258,6 +9258,14 @@ struct test_flash_attn_ext_qsa_gqa12 : public test_flash_attn_ext_qsa_sparse {
                ",qsa_gqa12=1,wide_union=" + std::to_string(wide_union);
     }
 
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * out = test_flash_attn_ext_qsa_sparse::build_graph(ctx);
+        if (std::getenv("GGML_TEST_QSA_GQA12_AUDIT_LAYER11")) {
+            ggml_set_name(out, "qsa_flash_attn_il11");
+        }
+        return out;
+    }
+
     void initialize_tensors(ggml_context * ctx) override {
         if (!wide_union) {
             test_flash_attn_ext_qsa_sparse::initialize_tensors(ctx);

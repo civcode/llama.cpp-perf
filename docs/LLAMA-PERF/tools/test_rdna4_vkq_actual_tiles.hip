@@ -33,10 +33,7 @@ __global__ void test_tiles(float * output) {
     for (int p = 0; p < 2; ++p) for (int l = 0; l < c[p].ne; ++l) c[p].x[l] *= 0.5f;
     mma_vkq_gfx12_fp32(c[0],c[1],a,b);
     __shared__ half combined[16*32];
-    for (int p = 0; p < 2; ++p) for (int l = 0; l < c[p].ne; ++l) {
-        int q = c[p].get_i(l), feature = 2*c[p].get_j(l)+p;
-        combined[q*32+feature] = __float2half_rn(c[p].x[l]);
-    }
+    store_vkq_gfx12_fp32_half(combined, 32, 0, 0, c[0], c[1]);
     __syncthreads();
     for (int i = threadIdx.x; i < 512; i += 32) output[i] = __half2float(combined[i]);
 #else

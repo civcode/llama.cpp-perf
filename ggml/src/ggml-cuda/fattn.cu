@@ -23,16 +23,13 @@ static const char * ggml_cuda_qsa_sparse_gqa12_layer_option(const ggml_tensor * 
     const char * sparse_enabled = std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12");
     const char * filter = std::getenv("GGML_HIP_QSA_GQA12_LAYER_FILTER");
 
-    // Diagnostic-only strict configuration gate. The compiled candidate is
-    // not yet validated on the attention path; retain fail-closed behavior.
+    // Diagnostic-only strict configuration gate. Actual FP32 dispatch is
+    // restricted and validated in the sparse attention case.
     const auto vkq_f32 = ggml_cuda_qsa_gqa12_vkq_f32::parse(
         std::getenv("GGML_HIP_QSA_GQA12_VKQ_F32"), sparse_enabled,
         std::getenv("GGML_QSA_MASK_AUDIT"), filter);
     if (!vkq_f32.valid) {
         GGML_ABORT("GGML_HIP_QSA_GQA12_VKQ_F32 requires exactly value 1, GQA12=1, GGML_QSA_MASK_AUDIT and layer filter only:11");
-    }
-    if (vkq_f32.enabled) {
-        GGML_ABORT("GGML_HIP_QSA_GQA12_VKQ_F32 candidate not validated; refusing execution");
     }
     if (filter == nullptr) {
         return sparse_enabled;
@@ -714,6 +711,40 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     const int cc = ggml_cuda_info().devices[device].cc;
+
+#if defined(GGML_USE_HIP)
+    // Fail closed before any generic attention fallback for an explicitly
+    // requested audited layer-11 Q4 operation. Other query sizes/layers keep
+    // their original kernels; they are not this diagnostic experiment.
+    const auto fp32_request = ggml_cuda_qsa_gqa12_vkq_f32::parse(
+            std::getenv("GGML_HIP_QSA_GQA12_VKQ_F32"),
+            std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12"),
+            std::getenv("GGML_QSA_MASK_AUDIT"),
+            std::getenv("GGML_HIP_QSA_GQA12_LAYER_FILTER"));
+    if (!fp32_request.valid) {
+        GGML_ABORT("invalid or incomplete GGML_HIP_QSA_GQA12_VKQ_F32 request");
+    }
+    if (fp32_request.enabled && Q->ne[1] == 4 &&
+            std::strcmp(dst->name, "qsa_flash_attn_il11") == 0) {
+        float softcap = 0.0f;
+        memcpy(&softcap, (const float *) KQV->op_params + 2, sizeof(float));
+        const int nmax = ggml_get_op_params_i32(dst, 4);
+        const bool eligible = ggml_cuda_qsa_gqa12_vkq_f32::eligible(
+                GGML_CUDA_CC_IS_RDNA4(cc), amd_wmma_available(cc),
+                K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16,
+                mask && mask->type == GGML_TYPE_F16,
+                Q->ne[0], V->ne[0], K->ne[0], Q->ne[1], Q->ne[3],
+                gqa_ratio, 11, K->ne[1], nmax);
+        if (!eligible || Q->type != GGML_TYPE_F32 || !gqa_opt_applies ||
+                !mask || mask->ne[2] != 1 || kv_rows || softcap != 0.0f ||
+                !ggml_cuda_fattn_sparse_q4_gqa12::should_use(
+                    GGML_CUDA_CC_IS_RDNA4(cc), amd_wmma_available(cc),
+                    Q->ne[0], V->ne[0], K->ne[0], Q->ne[1], Q->ne[3], gqa_ratio,
+                    gqa_opt_applies, true, true, K->ne[1], nmax, "1")) {
+            GGML_ABORT("requested VKQ FP32 but audited layer11 Q4 is not eligible");
+        }
+    }
+#endif
 
     switch (K->ne[0]) {
         case  40:
