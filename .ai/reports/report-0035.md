@@ -1,6 +1,6 @@
 # Report 0035 — blocked at device preflight
 
-**Status: Blocked.** Starting commit `9543bd6028423a11133c2c779ae6c6702e5c6d6d`. The requested FP32 kernel is **not implemented**, built, or traced; no four-condition experiment or FP64/downstream comparison was performed. The existing explicit `GPU implementation not built` abort remains in place. Production defaults and half2 arithmetic are unchanged. No conclusion about FP32 accuracy or kernel feasibility follows.
+**Status: Partial.** Starting commit `9543bd6028423a11133c2c779ae6c6702e5c6d6d`. The original device-node access blocker was resolved when the sandbox was deactivated; see the follow-up below. The requested FP32 kernel is **not implemented**, built, or traced; no four-condition experiment or FP64/downstream comparison was performed. The existing explicit `GPU implementation not built` abort remains in place. Production defaults and half2 arithmetic are unchanged. No conclusion about FP32 accuracy or kernel feasibility follows.
 
 ## CPU validation
 
@@ -12,4 +12,10 @@ The existing mixed build cache specifies Release and `CMAKE_HIP_ARCHITECTURES=gf
 
 The first passive device preflight returned `NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver`. In this execution environment `/dev/nvidia*` and `/dev/kfd` are absent, although PCI enumeration lists the NVIDIA device and two discrete AMD devices with kernel drivers attached. This may be device-node isolation rather than a host GPU fault; it cannot be resolved or distinguished here. Current-boot kernel log inspection showed NVIDIA module loading and no matching Xid/AER/DPC or AMD fault in the inspected lines. Neither GPU accessibility, GPU memory nor PCIe Gen3 could be verified. In accordance with the stop rule, no GPU work or model run was attempted after the failed check. No retries, resets, reboots, configuration changes, stress tests or GitHub Actions were performed.
 
-The remaining work requires an environment with the GPU device nodes available and healthy preflight, followed by a correctly wired, separately traceable FP32 implementation, mixed build, and the originally bounded pilot. Preserve the fail-closed guard until that implementation is demonstrated. Raw captures and model files were not created or modified.
+## Follow-up after sandbox deactivation
+
+The device nodes are now accessible. Passive `nvidia-smi` reports the NVIDIA device with 15930 MiB free and current PCIe Gen1 / maximum Gen3 (idle power management); `rocminfo` identifies both discrete AMD devices as gfx1201. Current-boot log inspection found no matching Xid/AER/DPC or AMD fault. This does not establish the loaded Gen3 link or complete the prescribed memory and capture-size preflight. No device configuration was changed.
+
+A fresh mixed CUDA/HIP Release build of `llama-server` and `test-backend-ops` succeeded on source `cd340821b` with gfx1201 and CUDA sm_89. UI provisioning fell back from the pinned asset to `latest`, as in the earlier build. This builds the existing fail-closed scaffold, **not** an FP32 specialization. Source inspection also found that the existing float VKQ combine path converts accumulator elements to half for shared-memory combination; preserving FP32 accumulation through the intended combine requires explicit analysis, not just changing the tile alias. No model inference or GPU kernel test was run.
+
+The remaining work is a correctly wired, separately traceable FP32 implementation, its mixed build, complete preflight, and the originally bounded pilot. The feasibility question is unresolved, not proven impossible. Preserve the fail-closed guard until that implementation is demonstrated. Raw captures and model files were not created or modified.
