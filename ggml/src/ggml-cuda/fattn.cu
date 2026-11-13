@@ -8,6 +8,7 @@
 #include "fattn-sparse-q4-tune.h"
 #include "fattn-sparse-q4-gqa12-tune.h"
 #include "fattn-sparse-q4-gqa12-layer-filter.h"
+#include "fattn-sparse-q4-gqa12-vkq-f32.h"
 
 #include <cstdlib>
 #include <atomic>
@@ -21,6 +22,21 @@
 static const char * ggml_cuda_qsa_sparse_gqa12_layer_option(const ggml_tensor * dst) {
     const char * sparse_enabled = std::getenv("GGML_HIP_QSA_SPARSE_Q4_GQA12");
     const char * filter = std::getenv("GGML_HIP_QSA_GQA12_LAYER_FILTER");
+
+    // Explicit fail-closed scaffold: the HIP WMMA accumulator variant is NOT
+    // implemented yet. A user opting in must never silently run the existing
+    // half2 path and mistake it for an FP32 VKQ precision experiment.
+    // The local GPU implementer removes only the unimplemented abort AFTER
+    // wiring a distinct compiled FP32 VKQ path and verifying actual launches.
+    const auto vkq_f32 = ggml_cuda_qsa_gqa12_vkq_f32::parse(
+        std::getenv("GGML_HIP_QSA_GQA12_VKQ_F32"), sparse_enabled,
+        std::getenv("GGML_QSA_MASK_AUDIT"), filter);
+    if (!vkq_f32.valid) {
+        GGML_ABORT("GGML_HIP_QSA_GQA12_VKQ_F32 requires exactly value 1, GQA12=1, GGML_QSA_MASK_AUDIT and layer filter only:11");
+    }
+    if (vkq_f32.enabled) {
+        GGML_ABORT("GGML_HIP_QSA_GQA12_VKQ_F32 GPU implementation not built; refuse to silently run half2 VKQ");
+    }
     if (filter == nullptr) {
         return sparse_enabled;
     }
