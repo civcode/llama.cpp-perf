@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <type_traits>
 
 using namespace ggml_cuda_mma;
 
@@ -1956,6 +1957,9 @@ static __global__ void flash_attn_ext_f16(
                             const int32_t nb31, const int32_t nb32, const int64_t nb33) {
     ggml_cuda_pdl_sync(); // TODO optimize placement
 #if defined(FLASH_ATTN_AVAILABLE) && (defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE))
+    static_assert(!use_vkq_f32 || (use_sparse && DKQ == 256 && DV == 256 &&
+                  ncols1 == 4 && ncols2 == 4 && !use_logit_softcap),
+                  "VKQ FP32 diagnostic is restricted to sparse 256x256 Q4 4x4 without softcap");
     const char * GGML_CUDA_RESTRICT Q              = Q_ptr;
     const char * GGML_CUDA_RESTRICT K              = K_ptr;
     const char * GGML_CUDA_RESTRICT V              = V_ptr;
