@@ -2221,7 +2221,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
             if (ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(cc, dst, ncols1, ncols2)) {
                 constexpr bool use_sparse_kernel = true;
                 if (requested_fp32_here) {
-#if defined(GGML_USE_HIP) && defined(AMD_WMMA_128B_AVAILABLE)
+#if defined(GGML_USE_HIP)
                     if constexpr (DKQ == 256 && DV == 256 && ncols1 == 4 && ncols2 == 4) {
                         const ggml_tensor * q = dst->src[0];
                         const ggml_tensor * k = dst->src[1];
