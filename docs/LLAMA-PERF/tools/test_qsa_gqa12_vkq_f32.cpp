@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include <climits>
+#include <initializer_list>
 
 using namespace ggml_cuda_qsa_gqa12_vkq_f32;
 
@@ -42,7 +43,7 @@ int main() {
 
     // Only the existing exactly eligible audited layer-11 sparse Q4/GQA12
     // operation can be evaluated in this first precision pilot.
-    constexpr auto eligible_default = [](const int dkq, const int dv,
+    const auto eligible_default = [](const int dkq, const int dv,
                                          const int dk, const int nq,
                                          const int nseq, const int gqa,
                                          const int layer, const int nkv,
