@@ -34,9 +34,8 @@ static const char * ggml_cuda_qsa_sparse_gqa12_layer_option(const ggml_tensor * 
     if (!vkq_f32.valid) {
         GGML_ABORT("GGML_HIP_QSA_GQA12_VKQ_F32 requires exactly value 1, GQA12=1, GGML_QSA_MASK_AUDIT and layer filter only:11");
     }
-    if (vkq_f32.enabled) {
-        GGML_ABORT("GGML_HIP_QSA_GQA12_VKQ_F32 GPU implementation not built; refuse to silently run half2 VKQ");
-    }
+    // The requested mode is dispatched only by the distinct gfx12 FP32
+    // WMMA sparse specialization; invalid requests still fail above.
     if (filter == nullptr) {
         return sparse_enabled;
     }
