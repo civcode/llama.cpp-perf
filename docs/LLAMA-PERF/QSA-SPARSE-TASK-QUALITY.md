@@ -239,3 +239,15 @@ Numerical equivalence is still **NOT_ESTABLISHED** and production promotion rema
 Detailed gfx1201 WMMA tile and final combine constraints are in [QSA-GQA12-VKQ-FP32-DESIGN.md](QSA-GQA12-VKQ-FP32-DESIGN.md). Its shape analysis is source-level, not GPU validated. The ongoing user-approved diagnostic precision milestone moves to **.ai/handoffs/handoff-0036.md**. Complete the real, distinctly traceable opt-in FP32 VKQ path, validate with local ROCm compilation and bounded low-risk tests, then run the already-approved matched ~32K dense A/B, half2-only11, FP32-only11 pilot only after robust device preflight. If technically blocked, keep the fail-closed guard and report the actual compilation/layout/LDS limitation. No repeat benchmark simply to find faults, no Gen4 or PCIe/power changes, no default-on sparse and no GitHub Actions.
 
 Production promotion and numerical equivalence remain **NO-GO**.
+
+
+## Iteration 0036 Partial and the 0037 source implementation
+
+Report 0036 verified that a **standalone** two-fragment gfx1201 FP32 WMMA matrix fixture passed on BOTH AMD devices; no attention specialization or model run occurred. Chat AI then implemented a **candidate compile-time FP32 register VKQ attention branch** on top of the proven gfx12 intrinsic:
+- gfx12 FP32 dual-fragment WMMA helper in mma.cuh;
+- an optional FP32 C tile threaded through the same sparse attention kernel/iter/combine templates in fattn-mma-f16.cuh, with host dispatch limited to audited sparse-only-layer11 256x256 Q4 GQA12, F16 KV/mask, and an explicit launch-selection marker;
+- the default half2 sparse implementation and non-sparse paths remain selected when no FP32 opt-in is present, and malformed or unsupported requested variants fail explicitly.
+
+**Important accuracy scope:** The FP32 specialization accumulates and online-rescales VKQ **in FP32 registers** but still converts its partial results to **FP16 in the original shared combine**. This is NOT complete FP32 end-to-end output reduction. The mathematical effect of this last rounding is a known confounder that must be reported. Implementing a separate FP32 shared combine would be a distinct intervention and must not be smuggled into the experiment. The source branch has **not been compiled or executed on Chat AI's container** and no GPU improvement can be claimed. The Coding Agent must fix any HIP compiler, shape, register pressure or operand-layout issues and validate it with a deterministic correct-input fixture and real runtime tracing before any model evaluation.
+
+Handoff 0037 batches local gfx1201 compilation, actual fragment-layout correctness validation, per-condition kernel attribution and **the same already-approved four fresh ~32K conditions only if all preflight checks pass**. NVIDIA PCIe stays operator-configured Gen3. Stop all GPU activity on serious Xid/CUDA/PCIe/HIP faults without retries. Sparse defaults and production NO-GO remain unchanged.
